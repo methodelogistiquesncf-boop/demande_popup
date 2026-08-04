@@ -12,7 +12,7 @@
   import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
-           query, orderBy, where, onSnapshot, serverTimestamp, getDoc, setDoc }
+           query, orderBy, where, onSnapshot, serverTimestamp, getDoc, setDoc, getDocs }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   // ── 🔧 CONFIGURATION FIREBASE ─────────────────────────────────────────────
@@ -25,16 +25,19 @@
     appId: "1:1089603775753:web:0eda8de1f0b5d6e34af7d8"
   };
 
-  const SUPER_ADMIN = "admin@votre-domaine.fr";
+  // Email initial (garde de secours si tous les admins sont supprimés)
+  const INITIAL_ADMIN = "admin@votre-domaine.fr";
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
   const rolesRef = doc(db, "config", "roles");
+  const logsRef = collection(db, "logs", "role_changes", "history");
 
   let currentUser = null;
   let isQualite = false;
   let isAdmin = false;
+  let adminEmails = [];
   let qualiteEmails = [];
   let unsubDemandes = null;
   let activeTab = "demandes";
@@ -130,9 +133,47 @@
   async function loadRoles() {
     try {
       const snap = await getDoc(rolesRef);
-      qualiteEmails = snap.exists() ? (snap.data().qualite || []) : [];
+      if (snap.exists()) {
+        const data = snap.data();
+        adminEmails = data.admin || [];
+        qualiteEmails = data.qualite || [];
+        
+        // S'assurer qu'il y a toujours au moins un admin
+        if (adminEmails.length === 0) {
+          adminEmails = [INITIAL_ADMIN];
+          await saveRoles();
+        }
+      } else {
+        // Première initialisation
+        adminEmails = [INITIAL_ADMIN];
+        qualiteEmails = [];
+        await saveRoles();
+      }
     } catch (e) {
+      adminEmails = [INITIAL_ADMIN];
       qualiteEmails = [];
+    }
+  }
+
+  async function saveRoles() {
+    await setDoc(rolesRef, { 
+      admin: adminEmails,
+      qualite: qualiteEmails 
+    });
+  }
+
+  // ── 📝 Logs des changements de rôles ────────────────────────────────────
+  async function logRoleChange(action, targetEmail, details = "") {
+    try {
+      await addDoc(logsRef, {
+        userEmail: currentUser.email,
+        action,
+        targetEmail,
+        details,
+        timestamp: serverTimestamp()
+      });
+    } catch (e) {
+      console.error("Erreur log:", e);
     }
   }
 
@@ -361,22 +402,112 @@
     btn.textContent = "🚀 Envoyer la demande";
   };
 
-  // ── ⚙️ ADMIN ────────────────────────────────────────────────────────────
+  // ── ⚙️ ADMIN : Gestion des rôles ────────────────────────────────────────
   function renderAdmin() {
-    const panel = document.getElementById("admin-emails-list");
-    if (!qualiteEmails.length) {
-      panel.innerHTML = `<div class="admin-empty">Aucun email Qualité enregistré.</div>`;
-      return;
-    }
-    panel.innerHTML = qualiteEmails.map((email, i) => `
-      <div class="admin-email-row">
-        <span class="admin-email-text">📧 ${email}</span>
-        <button class="btn-remove" data-idx="${i}" onclick="removeQualiteEmail(${i})">✕ Retirer</button>
-      </div>
-    `).join("");
+    renderAdminSection();
+    renderAdminLogs();
   }
 
-  window.addQualiteEmail = async function() {
+  function renderAdminSection() {
+    // Stats des rôles
+    document.getElementById("stat-admins").textContent = adminEmails.length;
+    document.getElementById("stat-qualite").textContent = qualiteEmails.length;
+    
+    // Liste des admins
+    const adminPanel = document.getElementById("admin-list");
+    if (!adminEmails.length) {
+      adminPanel.innerHTML = `<div class="admin-empty">Aucun administrateur.</div>`;
+    } else {
+      adminPanel.innerHTML = adminEmails.map((email, i) => `
+        <div class="admin-email-row">
+          <div class="admin-email-info">
+            <span class="admin-email-text">👑 ${email}</span>
+            ${email === INITIAL_ADMIN ? '<span class="admin-badge">Admin initial</span>' : ''}
+          </div>
+          <div class="admin-email-actions">
+            ${email !== currentUser.email ? `
+              <button class="btn-promote" onclick="promoteToQualite('${email}')" title="Promouvoir en Qualité">
+                ⬆️ Qualité
+              </button>
+              <button class="btn-remove" onclick="removeAdmin(${i})" title="Retirer les droits admin">
+                ✕ Retirer
+              </button>
+            ` : '<span class="admin-self">Vous</span>'}
+          </div>
+        </div>
+      `).join("");
+    }
+    
+    // Liste des Qualité
+    const qualitePanel = document.getElementById("qualite-list");
+    if (!qualiteEmails.length) {
+      qualitePanel.innerHTML = `<div class="admin-empty">Aucun membre Qualité.</div>`;
+    } else {
+      qualitePanel.innerHTML = qualiteEmails.map((email, i) => `
+        <div class="admin-email-row">
+          <div class="admin-email-info">
+            <span class="admin-email-text">📧 ${email}</span>
+          </div>
+          <div class="admin-email-actions">
+            <button class="btn-promote" onclick="promoteToAdmin('${email}')" title="Promouvoir en Admin">
+              ⬆️ Admin
+            </button>
+            <button class="btn-remove" onclick="removeQualite(${i})" title="Retirer du service Qualité">
+              ✕ Retirer
+            </button>
+          </div>
+        </div>
+      `).join("");
+    }
+  }
+
+  async function renderAdminLogs() {
+    const logsPanel = document.getElementById("admin-logs");
+    try {
+      const q = query(logsRef, orderBy("timestamp", "desc"));
+      const snap = await getDocs(q);
+      
+      if (snap.empty) {
+        logsPanel.innerHTML = `<div class="admin-empty">Aucun historique.</div>`;
+        return;
+      }
+      
+      const logs = snap.docs.slice(0, 20).map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      logsPanel.innerHTML = logs.map(log => {
+        const actionLabels = {
+          "add_admin": { label: "Ajout admin", icon: "👑", color: "var(--orange)" },
+          "remove_admin": { label: "Retrait admin", icon: "❌", color: "var(--red)" },
+          "add_qualite": { label: "Ajout Qualité", icon: "📧", color: "var(--blue)" },
+          "remove_qualite": { label: "Retrait Qualité", icon: "❌", color: "var(--red)" },
+          "promote_admin": { label: "Promotion admin", icon: "⬆️", color: "var(--green)" },
+          "promote_qualite": { label: "Promotion Qualité", icon: "⬆️", color: "var(--blue)" }
+        };
+        
+        const action = actionLabels[log.action] || { label: log.action, icon: "📝", color: "var(--text-secondary)" };
+        
+        return `
+          <div class="log-entry">
+            <div class="log-header">
+              <span class="log-icon" style="color: ${action.color}">${action.icon}</span>
+              <span class="log-action">${action.label}</span>
+              <span class="log-target">${log.targetEmail}</span>
+            </div>
+            <div class="log-meta">
+              <span class="log-user">Par ${log.userEmail}</span>
+              <span class="log-date">${fmt(log.timestamp)}</span>
+            </div>
+            ${log.details ? `<div class="log-details">${log.details}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+    } catch (e) {
+      logsPanel.innerHTML = `<div class="admin-empty">Erreur de chargement.</div>`;
+    }
+  }
+
+  // ── Gestion des Admins ──────────────────────────────────────────────────
+  window.addAdmin = async function() {
     const input = document.getElementById("admin-new-email");
     const email = input.value.trim().toLowerCase();
     
@@ -384,35 +515,130 @@
       showToast("Email invalide.", "error");
       return;
     }
+    
+    if (adminEmails.includes(email)) {
+      showToast("Cet email est déjà administrateur.", "error");
+      return;
+    }
+    
     if (qualiteEmails.includes(email)) {
-      showToast("Cet email est déjà dans la liste.", "error");
+      const confirmed = await showConfirm(
+        "Promouvoir en admin",
+        `${email} est déjà dans le service Qualité. Voulez-vous le promouvoir administrateur ?`
+      );
+      if (!confirmed) return;
+      
+      qualiteEmails = qualiteEmails.filter(e => e !== email);
+    }
+    
+    adminEmails = [...adminEmails, email];
+    await saveRoles();
+    await logRoleChange("add_admin", email);
+    
+    input.value = "";
+    showToast(`${email} promu administrateur.`, "success");
+    renderAdmin();
+  };
+
+  window.removeAdmin = async function(idx) {
+    const email = adminEmails[idx];
+    
+    if (adminEmails.length === 1) {
+      showToast("Impossible de retirer le dernier administrateur.", "error");
+      return;
+    }
+    
+    const confirmed = await showConfirm(
+      "Retirer les droits admin",
+      `Voulez-vous vraiment retirer les droits administrateur de ${email} ?`
+    );
+    if (!confirmed) return;
+    
+    adminEmails = adminEmails.filter((_, i) => i !== idx);
+    await saveRoles();
+    await logRoleChange("remove_admin", email);
+    
+    showToast(`${email} n'est plus administrateur.`, "success");
+    renderAdmin();
+  };
+
+  window.promoteToAdmin = async function(email) {
+    const confirmed = await showConfirm(
+      "Promouvoir en admin",
+      `Voulez-vous promouvoir ${email} au rang d'administrateur ?`
+    );
+    if (!confirmed) return;
+    
+    qualiteEmails = qualiteEmails.filter(e => e !== email);
+    adminEmails = [...adminEmails, email];
+    await saveRoles();
+    await logRoleChange("promote_admin", email);
+    
+    showToast(`${email} promu administrateur.`, "success");
+    renderAdmin();
+  };
+
+  // ── Gestion des Qualité ─────────────────────────────────────────────────
+  window.addQualite = async function() {
+    const input = document.getElementById("qualite-new-email");
+    const email = input.value.trim().toLowerCase();
+    
+    if (!email || !email.includes("@")) {
+      showToast("Email invalide.", "error");
+      return;
+    }
+    
+    if (qualiteEmails.includes(email)) {
+      showToast("Cet email est déjà dans le service Qualité.", "error");
+      return;
+    }
+    
+    if (adminEmails.includes(email)) {
+      showToast("Cet email est déjà administrateur.", "error");
       return;
     }
     
     qualiteEmails = [...qualiteEmails, email];
     await saveRoles();
+    await logRoleChange("add_qualite", email);
+    
     input.value = "";
     showToast(`${email} ajouté au service Qualité.`, "success");
     renderAdmin();
   };
 
-  window.removeQualiteEmail = async function(idx) {
+  window.removeQualite = async function(idx) {
     const email = qualiteEmails[idx];
+    
     const confirmed = await showConfirm(
-      "Retirer l'email",
+      "Retirer du service Qualité",
       `Voulez-vous vraiment retirer ${email} du service Qualité ?`
     );
     if (!confirmed) return;
     
     qualiteEmails = qualiteEmails.filter((_, i) => i !== idx);
     await saveRoles();
-    showToast(`${email} retiré.`, "success");
+    await logRoleChange("remove_qualite", email);
+    
+    showToast(`${email} retiré du service Qualité.`, "success");
     renderAdmin();
   };
 
-  async function saveRoles() {
-    await setDoc(rolesRef, { qualite: qualiteEmails });
-  }
+  window.promoteToQualite = async function(email) {
+    const confirmed = await showConfirm(
+      "Rétrograder en Qualité",
+      `Voulez-vous retirer les droits admin de ${email} et le mettre dans le service Qualité ?`
+    );
+    if (!confirmed) return;
+    
+    adminEmails = adminEmails.filter(e => e !== email);
+    qualiteEmails = [...qualiteEmails, email];
+    await saveRoles();
+    await logRoleChange("promote_qualite", email);
+    
+    showToast(`${email} déplacé vers le service Qualité.`, "success");
+    renderAdmin();
+  };
 
   // ── 📥 Export CSV ───────────────────────────────────────────────────────
   window.exportCSV = function() {
@@ -496,7 +722,7 @@
     currentUser = user;
     if (user) {
       await loadRoles();
-      isAdmin = user.email === SUPER_ADMIN;
+      isAdmin = adminEmails.includes(user.email);
       isQualite = isAdmin || qualiteEmails.includes(user.email);
 
       document.getElementById("screen-login").style.display = "none";
@@ -990,7 +1216,7 @@ body {
   display: none;
   flex: 1;
   padding: 40px 24px;
-  max-width: 800px;
+  max-width: 1200px;
   margin: 0 auto;
   width: 100%;
 }
@@ -1456,16 +1682,23 @@ body {
 }
 
 /* ── ADMIN PANEL ───────────────────────────────────────────────────────── */
+.admin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-bottom: 32px;
+}
+
 .admin-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 32px;
+  padding: 28px;
   box-shadow: var(--shadow);
 }
 
 .admin-card h3 {
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 800;
   color: var(--text);
   margin-bottom: 8px;
@@ -1475,23 +1708,55 @@ body {
 }
 
 .admin-card .admin-desc {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text-secondary);
-  margin-bottom: 28px;
+  margin-bottom: 20px;
   line-height: 1.6;
 }
 
-.admin-add-row {
-  display: flex;
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
   margin-bottom: 24px;
 }
 
+.admin-stat {
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+}
+
+.admin-stat-number {
+  font-size: 28px;
+  font-weight: 800;
+  display: block;
+}
+
+.admin-stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+  display: block;
+}
+
+.admin-stat-admins .admin-stat-number { color: var(--orange); }
+.admin-stat-qualite .admin-stat-number { color: var(--blue); }
+
+.admin-add-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
 .admin-add-row input {
   flex: 1;
-  padding: 12px 14px;
+  padding: 11px 13px;
   border: 1.5px solid var(--border);
-  border-radius: 10px;
+  border-radius: 9px;
   font-family: var(--font);
   font-size: 14px;
   color: var(--text);
@@ -1506,13 +1771,13 @@ body {
 }
 
 .btn-add {
-  padding: 12px 20px;
+  padding: 11px 18px;
   background: var(--orange);
   color: var(--white);
   border: none;
-  border-radius: 10px;
+  border-radius: 9px;
   font-family: var(--font);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
@@ -1527,13 +1792,16 @@ body {
 .admin-divider {
   border: none;
   border-top: 1px solid var(--border);
-  margin-bottom: 20px;
+  margin: 16px 0;
 }
 
-#admin-emails-list {
+#admin-list,
+#qualite-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .admin-email-row {
@@ -1542,32 +1810,86 @@ body {
   justify-content: space-between;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 16px;
+  border-radius: 9px;
+  padding: 11px 14px;
   transition: var(--transition);
+  gap: 12px;
 }
 
 .admin-email-row:hover {
   background: var(--border);
 }
 
+.admin-email-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
 .admin-email-text {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-badge {
+  background: var(--orange);
+  color: var(--white);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.admin-self {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.admin-email-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.btn-promote {
+  background: var(--blue-light);
+  color: var(--blue);
+  border: none;
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 11px;
+  font-family: var(--font);
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.btn-promote:hover {
+  background: #c8e0ff;
+  transform: scale(1.05);
 }
 
 .btn-remove {
   background: var(--red-light);
   color: var(--red);
   border: none;
-  border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 12px;
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 11px;
   font-family: var(--font);
   font-weight: 700;
   cursor: pointer;
   transition: var(--transition);
+  white-space: nowrap;
 }
 
 .btn-remove:hover {
@@ -1576,10 +1898,87 @@ body {
 }
 
 .admin-empty {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text-secondary);
   text-align: center;
-  padding: 40px 20px;
+  padding: 30px 20px;
+}
+
+/* ── Logs ──────────────────────────────────────────────────────────────── */
+.logs-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.logs-card h3 {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#admin-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.log-entry {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px 14px;
+  transition: var(--transition);
+}
+
+.log-entry:hover {
+  background: var(--border);
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.log-icon {
+  font-size: 16px;
+}
+
+.log-action {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.log-target {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.log-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.log-details {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
@@ -1616,6 +2015,10 @@ body {
   .tab-btn {
     padding: 6px 12px;
     font-size: 12px;
+  }
+  
+  .admin-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1667,6 +2070,16 @@ body {
   
   #panel-admin {
     padding: 20px 16px;
+  }
+  
+  .admin-email-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  
+  .admin-email-actions {
+    justify-content: flex-end;
   }
 }
 
@@ -1838,21 +2251,61 @@ body {
 
   <!-- ── Onglet Administration ── -->
   <div id="panel-admin">
-    <div class="admin-card">
-      <h3>⚙️ Membres du service Qualité</h3>
-      <p class="admin-desc">
-        Les emails listés ici ont accès à la vue <strong>Service Qualité</strong> : ils voient toutes les demandes
-        et peuvent y apporter une réponse. La liste est stockée dans Firebase.
-      </p>
+    
+    <!-- Stats -->
+    <div class="admin-stats">
+      <div class="admin-stat admin-stat-admins">
+        <span class="admin-stat-number" id="stat-admins">0</span>
+        <span class="admin-stat-label">Administrateurs</span>
+      </div>
+      <div class="admin-stat admin-stat-qualite">
+        <span class="admin-stat-number" id="stat-qualite">0</span>
+        <span class="admin-stat-label">Service Qualité</span>
+      </div>
+    </div>
 
-      <div class="admin-add-row">
-        <input type="email" id="admin-new-email" placeholder="prenom.nom@domaine.fr"
-               onkeydown="if(event.key==='Enter') addQualiteEmail()">
-        <button class="btn-add" onclick="addQualiteEmail()">+ Ajouter</button>
+    <!-- Grid de gestion -->
+    <div class="admin-grid">
+      
+      <!-- Gestion Admins -->
+      <div class="admin-card">
+        <h3>👑 Administrateurs</h3>
+        <p class="admin-desc">
+          Les administrateurs peuvent gérer les rôles et accéder à toutes les fonctionnalités.
+        </p>
+
+        <div class="admin-add-row">
+          <input type="email" id="admin-new-email" placeholder="email@domaine.fr"
+                 onkeydown="if(event.key==='Enter') addAdmin()">
+          <button class="btn-add" onclick="addAdmin()">+ Ajouter</button>
+        </div>
+
+        <hr class="admin-divider">
+        <div id="admin-list"></div>
       </div>
 
-      <hr class="admin-divider">
-      <div id="admin-emails-list"></div>
+      <!-- Gestion Qualité -->
+      <div class="admin-card">
+        <h3>📧 Service Qualité</h3>
+        <p class="admin-desc">
+          Les membres du service Qualité peuvent voir et répondre à toutes les demandes.
+        </p>
+
+        <div class="admin-add-row">
+          <input type="email" id="qualite-new-email" placeholder="email@domaine.fr"
+                 onkeydown="if(event.key==='Enter') addQualite()">
+          <button class="btn-add" onclick="addQualite()">+ Ajouter</button>
+        </div>
+
+        <hr class="admin-divider">
+        <div id="qualite-list"></div>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="logs-card">
+      <h3>📊 Historique des modifications</h3>
+      <div id="admin-logs"></div>
     </div>
   </div>
 
