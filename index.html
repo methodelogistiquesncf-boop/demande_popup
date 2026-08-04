@@ -1,93 +1,214 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Demandes Modification Popups</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
-           query, orderBy, onSnapshot, serverTimestamp, getDoc, setDoc }
+           query, orderBy, where, onSnapshot, serverTimestamp, getDoc, setDoc }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   // ── 🔧 CONFIGURATION FIREBASE ─────────────────────────────────────────────
   const firebaseConfig = {
-  apiKey: "AIzaSyAgyjanFGdNCe23ptWtrLgI1wUSZij5y9I",
-  authDomain: "popup-67e28.firebaseapp.com",
-  projectId: "popup-67e28",
-  storageBucket: "popup-67e28.firebasestorage.app",
-  messagingSenderId: "1089603775753",
-  appId: "1:1089603775753:web:0eda8de1f0b5d6e34af7d8"
+    apiKey: "AIzaSyAgyjanFGdNCe23ptWtrLgI1wUSZij5y9I",
+    authDomain: "popup-67e28.firebaseapp.com",
+    projectId: "popup-67e28",
+    storageBucket: "popup-67e28.firebasestorage.app",
+    messagingSenderId: "1089603775753",
+    appId: "1:1089603775753:web:0eda8de1f0b5d6e34af7d8"
   };
-  // ─────────────────────────────────────────────────────────────────────────
 
-  // Email du super-admin (seul autorisé à gérer les rôles)
-  // C'est le SEUL email qui reste dans le code — il ne change jamais.
   const SUPER_ADMIN = "admin@votre-domaine.fr";
 
-  const app  = initializeApp(firebaseConfig);
+  const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
-  const db   = getFirestore(app);
-
-  // Référence du document de config des rôles dans Firestore
+  const db = getFirestore(app);
   const rolesRef = doc(db, "config", "roles");
 
-  let currentUser    = null;
-  let isQualite      = false;
-  let isAdmin        = false;
-  let qualiteEmails  = [];   // chargé depuis Firestore
-  let unsubDemandes  = null;
-  let activeTab      = "demandes";
+  let currentUser = null;
+  let isQualite = false;
+  let isAdmin = false;
+  let qualiteEmails = [];
+  let unsubDemandes = null;
+  let activeTab = "demandes";
+  let allDemandes = [];
+  let currentFilter = "all";
+  let currentSearch = "";
+  let formModified = false;
 
-  // ── Utilitaires ──────────────────────────────────────────────────────────
+  // ── 🎨 Thème ────────────────────────────────────────────────────────────
+  const savedTheme = localStorage.getItem("theme") || "light";
+  document.documentElement.setAttribute("data-theme", savedTheme);
+
+  window.toggleTheme = () => {
+    const current = document.documentElement.getAttribute("data-theme");
+    const newTheme = current === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", newTheme);
+    localStorage.setItem("theme", newTheme);
+    document.getElementById("theme-icon").textContent = newTheme === "dark" ? "☀️" : "🌙";
+  };
+
+  // ── 📅 Utilitaires ──────────────────────────────────────────────────────
   function fmt(ts) {
     if (!ts) return "—";
     const d = ts.toDate ? ts.toDate() : new Date(ts);
-    return d.toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"numeric",
-                                           hour:"2-digit", minute:"2-digit" });
+    const now = new Date();
+    const diff = now - d;
+    if (diff < 60000) return "À l'instant";
+    if (diff < 3600000) return `Il y a ${Math.floor(diff / 60000)} min`;
+    if (diff < 86400000) return `Il y a ${Math.floor(diff / 3600000)} h`;
+    if (diff < 604800000) return `Il y a ${Math.floor(diff / 86400000)} j`;
+    return d.toLocaleDateString("fr-FR", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit"
+    });
   }
 
   function statusBadge(status) {
     const map = {
-      nouveau:  { label:"Nouveau",  cls:"badge-new"  },
-      en_cours: { label:"En cours", cls:"badge-wip"  },
-      resolu:   { label:"Résolu",   cls:"badge-done" },
+      nouveau: { label: "Nouveau", cls: "badge-new", icon: "🆕" },
+      en_cours: { label: "En cours", cls: "badge-wip", icon: "⚡" },
+      resolu: { label: "Résolu", cls: "badge-done", icon: "✅" },
     };
     const s = map[status] || map.nouveau;
-    return `<span class="badge ${s.cls}">${s.label}</span>`;
+    return `<span class="badge ${s.cls}">${s.icon} ${s.label}</span>`;
   }
 
-  // ── Chargement des rôles depuis Firestore ────────────────────────────────
+  function priorityBadge(priority) {
+    const map = {
+      haute: { label: "Haute", cls: "priority-high", icon: "🔴" },
+      moyenne: { label: "Moyenne", cls: "priority-med", icon: "🟡" },
+      basse: { label: "Basse", cls: "priority-low", icon: "🟢" },
+    };
+    const p = map[priority] || map.moyenne;
+    return `<span class="priority-badge ${p.cls}">${p.icon} ${p.label}</span>`;
+  }
+
+  // ── 🔔 Notifications Toast ──────────────────────────────────────────────
+  function showToast(message, type = "info", duration = 4000) {
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+      <div class="toast-content">
+        <span class="toast-icon">${type === "success" ? "✓" : type === "error" ? "✕" : "ℹ"}</span>
+        <span class="toast-message">${message}</span>
+      </div>
+    `;
+    document.getElementById("toast-container").appendChild(toast);
+    
+    setTimeout(() => toast.classList.add("show"), 100);
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+
+  // ── 🎯 Confirmation modale ──────────────────────────────────────────────
+  function showConfirm(title, message) {
+    return new Promise(resolve => {
+      const modal = document.getElementById("confirm-modal");
+      document.getElementById("confirm-title").textContent = title;
+      document.getElementById("confirm-message").textContent = message;
+      modal.classList.add("show");
+      
+      const confirm = () => { modal.classList.remove("show"); resolve(true); };
+      const cancel = () => { modal.classList.remove("show"); resolve(false); };
+      
+      document.getElementById("confirm-yes").onclick = confirm;
+      document.getElementById("confirm-no").onclick = cancel;
+    });
+  }
+
+  // ── 📊 Chargement des rôles ─────────────────────────────────────────────
   async function loadRoles() {
     try {
       const snap = await getDoc(rolesRef);
       qualiteEmails = snap.exists() ? (snap.data().qualite || []) : [];
-    } catch(e) {
+    } catch (e) {
       qualiteEmails = [];
     }
   }
 
-  // ── Onglets ───────────────────────────────────────────────────────────────
+  // ── 📋 Onglets ──────────────────────────────────────────────────────────
   window.switchTab = function(tab) {
     activeTab = tab;
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    document.querySelectorAll(".tab-btn").forEach(b => 
+      b.classList.toggle("active", b.dataset.tab === tab));
     document.getElementById("panel-demandes").style.display = tab === "demandes" ? "flex" : "none";
-    document.getElementById("panel-admin").style.display    = tab === "admin"    ? "block" : "none";
+    document.getElementById("panel-admin").style.display = tab === "admin" ? "block" : "none";
     if (tab === "admin") renderAdmin();
   };
 
-  // ── Rendu liste demandes ──────────────────────────────────────────────────
+  // ── 🔍 Filtres & Recherche ──────────────────────────────────────────────
+  window.filterDemandes = function(filter) {
+    currentFilter = filter;
+    document.querySelectorAll(".filter-btn").forEach(b => 
+      b.classList.toggle("active", b.dataset.filter === filter));
+    renderDemandes(getFilteredDemandes());
+  };
+
+  window.searchDemandes = function(query) {
+    currentSearch = query.toLowerCase();
+    renderDemandes(getFilteredDemandes());
+  };
+
+  function getFilteredDemandes() {
+    let filtered = allDemandes;
+    
+    if (currentFilter !== "all") {
+      filtered = filtered.filter(d => d.statut === currentFilter);
+    }
+    
+    if (currentSearch) {
+      filtered = filtered.filter(d => 
+        d.symbole.toLowerCase().includes(currentSearch) ||
+        d.demandeur.toLowerCase().includes(currentSearch) ||
+        d.raison.toLowerCase().includes(currentSearch) ||
+        (d.reponse && d.reponse.toLowerCase().includes(currentSearch))
+      );
+    }
+    
+    return filtered;
+  }
+
+  // ── 📈 Statistiques ─────────────────────────────────────────────────────
+  function updateStats(demandes) {
+    const total = demandes.length;
+    const nouveau = demandes.filter(d => d.statut === "nouveau").length;
+    const enCours = demandes.filter(d => d.statut === "en_cours").length;
+    const resolu = demandes.filter(d => d.statut === "resolu").length;
+    
+    document.getElementById("stat-total").textContent = total;
+    document.getElementById("stat-nouveau").textContent = nouveau;
+    document.getElementById("stat-encours").textContent = enCours;
+    document.getElementById("stat-resolu").textContent = resolu;
+    
+    document.getElementById("counter").textContent = 
+      isQualite ? `${nouveau} en attente` : `${total} demande(s)`;
+  }
+
+  // ── 📝 Rendu liste demandes ─────────────────────────────────────────────
   function renderDemandes(demandes) {
     const list = document.getElementById("list");
+    
     if (!demandes.length) {
-      list.innerHTML = `<div class="empty">Aucune demande pour le moment.</div>`;
+      list.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">📭</div>
+          <p>${currentFilter !== "all" || currentSearch 
+            ? "Aucune demande ne correspond à vos critères." 
+            : "Aucune demande pour le moment."}</p>
+        </div>`;
       return;
     }
+    
     list.innerHTML = demandes.map(d => `
       <div class="card" data-id="${d.id}">
         <div class="card-header">
@@ -96,7 +217,10 @@
             <span class="meta-who">${d.demandeur}</span>
             <span class="meta-date">${fmt(d.dateDemande)}</span>
           </div>
-          ${statusBadge(d.statut)}
+          <div class="card-badges">
+            ${statusBadge(d.statut)}
+            ${d.priorite ? priorityBadge(d.priorite) : ""}
+          </div>
         </div>
         <div class="card-reason">
           <span class="label-reason">Raison</span>
@@ -110,78 +234,134 @@
         </div>` : ""}
         ${isQualite ? `
         <div class="card-actions">
-          <select class="select-status" data-id="${d.id}">
-            <option value="nouveau"  ${d.statut==="nouveau"  ?"selected":""}>Nouveau</option>
-            <option value="en_cours" ${d.statut==="en_cours" ?"selected":""}>En cours</option>
-            <option value="resolu"   ${d.statut==="resolu"   ?"selected":""}>Résolu</option>
-          </select>
-          <textarea class="reply-input" placeholder="Réponse du service Qualité…" data-id="${d.id}">${d.reponse||""}</textarea>
-          <button class="btn-reply" data-id="${d.id}">Enregistrer</button>
+          <div class="action-row">
+            <select class="select-status" data-id="${d.id}">
+              <option value="nouveau" ${d.statut === "nouveau" ? "selected" : ""}>🆕 Nouveau</option>
+              <option value="en_cours" ${d.statut === "en_cours" ? "selected" : ""}>⚡ En cours</option>
+              <option value="resolu" ${d.statut === "resolu" ? "selected" : ""}>✅ Résolu</option>
+            </select>
+            <select class="select-priority" data-id="${d.id}">
+              <option value="">Priorité</option>
+              <option value="haute" ${d.priorite === "haute" ? "selected" : ""}>🔴 Haute</option>
+              <option value="moyenne" ${d.priorite === "moyenne" ? "selected" : ""}>🟡 Moyenne</option>
+              <option value="basse" ${d.priorite === "basse" ? "selected" : ""}>🟢 Basse</option>
+            </select>
+          </div>
+          <textarea class="reply-input" placeholder="Réponse du service Qualité…" data-id="${d.id}">${d.reponse || ""}</textarea>
+          <div class="action-buttons">
+            <button class="btn-reply" data-id="${d.id}">💾 Enregistrer</button>
+            <button class="btn-delete" data-id="${d.id}" title="Supprimer">🗑️</button>
+          </div>
         </div>` : ""}
       </div>
     `).join("");
 
     list.querySelectorAll(".btn-reply").forEach(btn => {
       btn.addEventListener("click", async () => {
-        const id      = btn.dataset.id;
+        const id = btn.dataset.id;
         const reponse = list.querySelector(`.reply-input[data-id="${id}"]`).value.trim();
-        const statut  = list.querySelector(`.select-status[data-id="${id}"]`).value;
-        if (!reponse) { alert("Veuillez saisir une réponse."); return; }
-        btn.disabled = true; btn.textContent = "…";
-        await updateDoc(doc(db, "demandes", id), {
-          reponse, statut, dateReponse: serverTimestamp(), repondantEmail: currentUser.email
-        });
-        btn.textContent = "✓ Enregistré";
+        const statut = list.querySelector(`.select-status[data-id="${id}"]`).value;
+        const priorite = list.querySelector(`.select-priority[data-id="${id}"]`).value || null;
+        
+        if (!reponse) {
+          showToast("Veuillez saisir une réponse.", "error");
+          return;
+        }
+        
+        btn.disabled = true;
+        btn.textContent = "⏳";
+        try {
+          await updateDoc(doc(db, "demandes", id), {
+            reponse, statut, priorite,
+            dateReponse: serverTimestamp(),
+            repondantEmail: currentUser.email
+          });
+          showToast("Réponse enregistrée !", "success");
+          btn.textContent = "✓";
+        } catch (e) {
+          showToast("Erreur : " + e.message, "error");
+          btn.textContent = "💾 Enregistrer";
+        }
+        btn.disabled = false;
+      });
+    });
+
+    list.querySelectorAll(".btn-delete").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const confirmed = await showConfirm(
+          "Supprimer la demande",
+          "Cette action est irréversible. Voulez-vous vraiment supprimer cette demande ?"
+        );
+        if (!confirmed) return;
+        
+        try {
+          await deleteDoc(doc(db, "demandes", id));
+          showToast("Demande supprimée", "success");
+        } catch (e) {
+          showToast("Erreur : " + e.message, "error");
+        }
       });
     });
   }
 
-  // ── Écoute temps réel ─────────────────────────────────────────────────────
+  // ── 📡 Écoute temps réel ────────────────────────────────────────────────
   function startListen() {
     if (unsubDemandes) unsubDemandes();
     const q = query(collection(db, "demandes"), orderBy("dateDemande", "desc"));
+    
     unsubDemandes = onSnapshot(q, snap => {
-      const all      = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const filtered = isQualite ? all : all.filter(d => d.demandeurEmail === currentUser.email);
-      renderDemandes(filtered);
-      const nbNew = isQualite
-        ? all.filter(d => d.statut === "nouveau").length
-        : filtered.length;
-      document.getElementById("counter").textContent =
-        isQualite ? `${nbNew} en attente` : `${filtered.length} demande(s)`;
+      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      allDemandes = isQualite ? all : all.filter(d => d.demandeurEmail === currentUser.email);
+      
+      updateStats(allDemandes);
+      renderDemandes(getFilteredDemandes());
     });
   }
 
-  // ── Nouvelle demande ──────────────────────────────────────────────────────
+  // ── 📤 Nouvelle demande ─────────────────────────────────────────────────
   window.submitDemande = async function() {
-    const symbole   = document.getElementById("f-symbole").value.trim();
-    const raison    = document.getElementById("f-raison").value.trim();
+    const symbole = document.getElementById("f-symbole").value.trim();
+    const raison = document.getElementById("f-raison").value.trim();
     const demandeur = document.getElementById("f-demandeur").value.trim();
-    if (!symbole || !raison || !demandeur) { showFormMsg("Veuillez remplir tous les champs.", "error"); return; }
+    const categorie = document.getElementById("f-categorie").value;
+    
+    if (!symbole || !raison || !demandeur) {
+      showToast("Veuillez remplir tous les champs obligatoires.", "error");
+      return;
+    }
+    
     const btn = document.getElementById("btn-submit");
-    btn.disabled = true; btn.textContent = "Envoi…";
+    btn.disabled = true;
+    btn.textContent = "⏳ Envoi…";
+    
     try {
       await addDoc(collection(db, "demandes"), {
-        symbole, raison, demandeur,
+        symbole, raison, demandeur, categorie,
         demandeurEmail: currentUser.email,
         dateDemande: serverTimestamp(),
-        statut: "nouveau", reponse: null, dateReponse: null
+        statut: "nouveau",
+        reponse: null,
+        dateReponse: null,
+        priorite: null
       });
+      
       document.getElementById("f-symbole").value = "";
-      document.getElementById("f-raison").value  = "";
+      document.getElementById("f-raison").value = "";
       document.getElementById("f-demandeur").value = "";
-      showFormMsg("Demande envoyée au service Qualité !", "success");
-    } catch(e) { showFormMsg("Erreur : " + e.message, "error"); }
-    btn.disabled = false; btn.textContent = "Envoyer la demande";
+      document.getElementById("f-categorie").value = "autre";
+      formModified = false;
+      
+      showToast("Demande envoyée au service Qualité !", "success");
+    } catch (e) {
+      showToast("Erreur : " + e.message, "error");
+    }
+    
+    btn.disabled = false;
+    btn.textContent = "🚀 Envoyer la demande";
   };
 
-  function showFormMsg(msg, type) {
-    const el = document.getElementById("form-msg");
-    el.textContent = msg; el.className = `form-msg ${type}`;
-    setTimeout(() => el.textContent = "", 4000);
-  }
-
-  // ── ADMIN : gestion des emails Qualité ───────────────────────────────────
+  // ── ⚙️ ADMIN ────────────────────────────────────────────────────────────
   function renderAdmin() {
     const panel = document.getElementById("admin-emails-list");
     if (!qualiteEmails.length) {
@@ -199,21 +379,34 @@
   window.addQualiteEmail = async function() {
     const input = document.getElementById("admin-new-email");
     const email = input.value.trim().toLowerCase();
-    if (!email || !email.includes("@")) { showAdminMsg("Email invalide.", "error"); return; }
-    if (qualiteEmails.includes(email))  { showAdminMsg("Cet email est déjà dans la liste.", "error"); return; }
+    
+    if (!email || !email.includes("@")) {
+      showToast("Email invalide.", "error");
+      return;
+    }
+    if (qualiteEmails.includes(email)) {
+      showToast("Cet email est déjà dans la liste.", "error");
+      return;
+    }
+    
     qualiteEmails = [...qualiteEmails, email];
     await saveRoles();
     input.value = "";
-    showAdminMsg(`${email} ajouté au service Qualité.`, "success");
+    showToast(`${email} ajouté au service Qualité.`, "success");
     renderAdmin();
   };
 
   window.removeQualiteEmail = async function(idx) {
     const email = qualiteEmails[idx];
-    if (!confirm(`Retirer ${email} du service Qualité ?`)) return;
+    const confirmed = await showConfirm(
+      "Retirer l'email",
+      `Voulez-vous vraiment retirer ${email} du service Qualité ?`
+    );
+    if (!confirmed) return;
+    
     qualiteEmails = qualiteEmails.filter((_, i) => i !== idx);
     await saveRoles();
-    showAdminMsg(`${email} retiré.`, "success");
+    showToast(`${email} retiré.`, "success");
     renderAdmin();
   };
 
@@ -221,292 +414,1299 @@
     await setDoc(rolesRef, { qualite: qualiteEmails });
   }
 
-  function showAdminMsg(msg, type) {
-    const el = document.getElementById("admin-msg");
-    el.textContent = msg; el.className = `form-msg ${type}`;
-    setTimeout(() => el.textContent = "", 4000);
-  }
+  // ── 📥 Export CSV ───────────────────────────────────────────────────────
+  window.exportCSV = function() {
+    if (!allDemandes.length) {
+      showToast("Aucune donnée à exporter.", "error");
+      return;
+    }
+    
+    const headers = ["Symbole", "Demandeur", "Catégorie", "Raison", "Statut", "Priorité", "Date", "Réponse"];
+    const rows = allDemandes.map(d => [
+      d.symbole,
+      d.demandeur,
+      d.categorie || "-",
+      d.raison.replace(/"/g, '""'),
+      d.statut,
+      d.priorite || "-",
+      fmt(d.dateDemande),
+      (d.reponse || "").replace(/"/g, '""')
+    ]);
+    
+    const csv = [headers, ...rows]
+      .map(row => row.map(cell => `"${cell}"`).join(","))
+      .join("\n");
+    
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `demandes_${new Date().toISOString().split("T")[0]}.csv`;
+    link.click();
+    
+    showToast("Export CSV téléchargé !", "success");
+  };
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // ── 🔐 Auth ─────────────────────────────────────────────────────────────
   window.doLogin = async function() {
     const email = document.getElementById("login-email").value.trim();
-    const pass  = document.getElementById("login-pass").value;
-    document.getElementById("login-err").textContent = "";
+    const pass = document.getElementById("login-pass").value;
+    
+    if (!email || !pass) {
+      showToast("Veuillez remplir tous les champs.", "error");
+      return;
+    }
+    
     try {
       await signInWithEmailAndPassword(auth, email, pass);
-    } catch(e) {
-      document.getElementById("login-err").textContent = "Identifiants incorrects.";
+    } catch (e) {
+      showToast("Identifiants incorrects.", "error");
     }
   };
 
   window.doLogout = async function() {
+    if (formModified) {
+      const confirmed = await showConfirm(
+        "Formulaire non sauvegardé",
+        "Vous avez des modifications non envoyées. Voulez-vous vraiment vous déconnecter ?"
+      );
+      if (!confirmed) return;
+    }
+    
     if (unsubDemandes) unsubDemandes();
     await signOut(auth);
+    showToast("Déconnexion réussie", "success");
   };
 
+  // ── ⌨️ Raccourcis clavier ───────────────────────────────────────────────
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === "k") {
+        e.preventDefault();
+        document.getElementById("search-input")?.focus();
+      }
+      if (e.key === "Enter" && activeTab === "demandes" && !isQualite) {
+        e.preventDefault();
+        submitDemande();
+      }
+    }
+  });
+
+  // ── 🎯 Auth State ───────────────────────────────────────────────────────
   onAuthStateChanged(auth, async user => {
     currentUser = user;
     if (user) {
       await loadRoles();
-      isAdmin   = user.email === SUPER_ADMIN;
+      isAdmin = user.email === SUPER_ADMIN;
       isQualite = isAdmin || qualiteEmails.includes(user.email);
 
       document.getElementById("screen-login").style.display = "none";
-      document.getElementById("screen-app").style.display   = "flex";
-      document.getElementById("user-email").textContent     = user.email;
-      document.getElementById("user-role").textContent      =
+      document.getElementById("screen-app").style.display = "flex";
+      document.getElementById("user-email").textContent = user.email;
+      document.getElementById("user-role").textContent =
         isAdmin ? "Administrateur" : isQualite ? "Service Qualité" : "Demandeur";
 
-      // Onglet Admin visible seulement pour le super-admin
       document.getElementById("tab-admin").style.display = isAdmin ? "inline-flex" : "none";
-      // Formulaire masqué pour Qualité/Admin
       document.getElementById("form-section").style.display = (isQualite || isAdmin) ? "none" : "block";
+      document.getElementById("btn-export").style.display = (isQualite || isAdmin) ? "inline-flex" : "none";
 
       switchTab("demandes");
       startListen();
+      
+      showToast(`Bienvenue ${user.email} !`, "success");
     } else {
       document.getElementById("screen-login").style.display = "flex";
-      document.getElementById("screen-app").style.display   = "none";
+      document.getElementById("screen-app").style.display = "none";
+      allDemandes = [];
+    }
+  });
+
+  // ── 📝 Suivi modifications formulaire ───────────────────────────────────
+  ["f-symbole", "f-raison", "f-demandeur"].forEach(id => {
+    document.getElementById(id).addEventListener("input", () => formModified = true);
+  });
+
+  // ── ⚠️ Confirmation avant fermeture ─────────────────────────────────────
+  window.addEventListener("beforeunload", (e) => {
+    if (formModified) {
+      e.preventDefault();
+      e.returnValue = "";
     }
   });
 </script>
 
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Variables CSS ─────────────────────────────────────────────────────── */
 :root {
-  --navy:   #1A2F4E;
-  --navy2:  #243d63;
-  --bg:     #F7F9FC;
+  --navy: #1A2F4E;
+  --navy2: #243d63;
+  --bg: #F7F9FC;
+  --bg-card: #ffffff;
+  --text: #1a1a2e;
+  --text-secondary: #6B7A8D;
   --orange: #E05A00;
-  --green:  #2E7D52;
-  --gray:   #6B7A8D;
+  --orange-hover: #c44e00;
+  --green: #2E7D52;
+  --green-hover: #245f3e;
+  --red: #c0392b;
+  --red-light: #fde8e8;
+  --blue: #1565C0;
+  --blue-light: #E3F2FD;
   --border: #DDE3EC;
-  --white:  #ffffff;
-  --font:   'Inter', sans-serif;
-  --radius: 10px;
+  --white: #ffffff;
+  --font: 'Inter', sans-serif;
+  --radius: 12px;
+  --shadow: 0 2px 8px rgba(0,0,0,.04);
+  --shadow-hover: 0 4px 16px rgba(0,0,0,.08);
+  --transition: all 0.2s ease;
 }
-body { font-family: var(--font); background: var(--bg); color: #1a1a2e; min-height: 100vh; }
 
-/* LOGIN */
+[data-theme="dark"] {
+  --bg: #0f1419;
+  --bg-card: #1a1f2e;
+  --text: #e4e6eb;
+  --text-secondary: #b0b3b8;
+  --border: #2d333b;
+  --shadow: 0 2px 8px rgba(0,0,0,.3);
+  --shadow-hover: 0 4px 16px rgba(0,0,0,.4);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  transition: background 0.3s ease;
+}
+
+/* ── Toast Notifications ───────────────────────────────────────────────── */
+#toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toast {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 20px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.15);
+  transform: translateX(400px);
+  transition: transform 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  max-width: 360px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast.show { transform: translateX(0); }
+
+.toast-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.toast-icon {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.toast-message {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.toast-success { border-left: 4px solid var(--green); }
+.toast-success .toast-icon { color: var(--green); }
+
+.toast-error { border-left: 4px solid var(--red); }
+.toast-error .toast-icon { color: var(--red); }
+
+.toast-info { border-left: 4px solid var(--blue); }
+.toast-info .toast-icon { color: var(--blue); }
+
+/* ── Modal Confirmation ────────────────────────────────────────────────── */
+#confirm-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  backdrop-filter: blur(4px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#confirm-modal.show {
+  display: flex;
+  opacity: 1;
+}
+
+.modal-content {
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,.3);
+}
+
+.modal-content h3 {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+
+.modal-content p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.btn-modal {
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-modal-cancel {
+  background: var(--border);
+  color: var(--text);
+}
+
+.btn-modal-cancel:hover {
+  background: #c5ccd6;
+}
+
+.btn-modal-confirm {
+  background: var(--red);
+  color: var(--white);
+}
+
+.btn-modal-confirm:hover {
+  background: #a0281f;
+}
+
+/* ── LOGIN ─────────────────────────────────────────────────────────────── */
 #screen-login {
-  display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%);
+  padding: 20px;
 }
+
 .login-box {
-  background: var(--white); border-radius: 16px; padding: 40px 36px;
-  width: 360px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  background: var(--white);
+  border-radius: 20px;
+  padding: 48px 40px;
+  width: 400px;
+  max-width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  animation: slideUp 0.5s ease;
 }
-.login-logo { text-align: center; margin-bottom: 28px; }
-.login-logo .icon { font-size: 36px; }
-.login-logo h1 { font-size: 18px; font-weight: 700; color: var(--navy); margin-top: 8px; }
-.login-logo p  { font-size: 12px; color: var(--gray); margin-top: 3px; }
 
-.field { margin-bottom: 16px; }
-.field label { display: block; font-size: 12px; font-weight: 600; color: var(--gray);
-               text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
-.field input, .field textarea, .field select {
-  width: 100%; padding: 10px 12px; border: 1.5px solid var(--border);
-  border-radius: 8px; font-family: var(--font); font-size: 14px; color: var(--navy);
-  background: var(--white); transition: border .2s;
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.field input:focus, .field textarea:focus { outline: none; border-color: var(--orange); }
+
+.login-logo {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.login-logo .icon {
+  font-size: 48px;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.login-logo h1 {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--navy);
+  margin-top: 12px;
+}
+
+.login-logo p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.field {
+  margin-bottom: 20px;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-card);
+  transition: var(--transition);
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
+}
+
 .btn-primary {
-  width: 100%; padding: 12px; background: var(--orange); color: var(--white);
-  border: none; border-radius: 8px; font-family: var(--font); font-size: 14px;
-  font-weight: 600; cursor: pointer; transition: background .2s, transform .1s;
+  width: 100%;
+  padding: 14px;
+  background: var(--orange);
+  color: var(--white);
+  border: none;
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  position: relative;
+  overflow: hidden;
 }
-.btn-primary:hover  { background: #c44e00; }
-.btn-primary:active { transform: scale(.98); }
-.btn-primary:disabled { opacity: .6; cursor: not-allowed; }
-#login-err { color: #c0392b; font-size: 12px; margin-top: 8px; text-align: center; }
 
-/* APP */
-#screen-app { display: none; flex-direction: column; min-height: 100vh; }
+.btn-primary:hover:not(:disabled) {
+  background: var(--orange-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(224, 90, 0, 0.3);
+}
 
-/* Topbar */
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── APP ───────────────────────────────────────────────────────────────── */
+#screen-app {
+  display: none;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
 .topbar {
-  background: var(--navy); color: var(--white);
-  padding: 0 24px; height: 56px;
-  display: flex; align-items: center; justify-content: space-between;
-  position: sticky; top: 0; z-index: 10;
+  background: var(--navy);
+  color: var(--white);
+  padding: 0 24px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,.15);
 }
-.topbar-left { display: flex; align-items: center; gap: 16px; }
-.topbar-left .ticon { font-size: 20px; }
-.topbar-left h2 { font-size: 15px; font-weight: 700; }
 
-/* Onglets dans la topbar */
-.tabs { display: flex; gap: 4px; }
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+}
+
+.topbar-left .ticon {
+  font-size: 24px;
+}
+
+.topbar-left h2 {
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-left: 24px;
+}
+
 .tab-btn {
-  background: rgba(255,255,255,.1); border: none; color: rgba(255,255,255,.7);
-  border-radius: 6px; padding: 6px 14px; font-family: var(--font); font-size: 13px;
-  font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-  transition: background .2s, color .2s;
+  background: rgba(255,255,255,.1);
+  border: none;
+  color: rgba(255,255,255,.7);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition);
+  white-space: nowrap;
 }
-.tab-btn:hover  { background: rgba(255,255,255,.18); color: #fff; }
-.tab-btn.active { background: var(--orange); color: #fff; }
 
-.topbar-right { display: flex; align-items: center; gap: 12px; }
+.tab-btn:hover:not(.active) {
+  background: rgba(255,255,255,.18);
+  color: #fff;
+}
+
+.tab-btn.active {
+  background: var(--orange);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(224, 90, 0, 0.4);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theme-toggle {
+  background: rgba(255,255,255,.1);
+  border: none;
+  color: var(--white);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+}
+
+.theme-toggle:hover {
+  background: rgba(255,255,255,.2);
+  transform: rotate(20deg);
+}
+
 .user-pill {
-  background: rgba(255,255,255,.12); border-radius: 20px;
-  padding: 4px 12px; font-size: 12px;
+  background: rgba(255,255,255,.12);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.user-pill strong { color: #fff; }
-.user-pill .role  { color: #aac4ff; font-size: 11px; margin-left: 6px; }
+
+.user-pill strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+.user-pill .role {
+  color: #aac4ff;
+  font-size: 11px;
+  background: rgba(255,255,255,.15);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
 .btn-logout {
-  background: rgba(255,255,255,.15); border: none; color: var(--white);
-  border-radius: 6px; padding: 6px 12px; font-size: 12px; font-family: var(--font);
-  cursor: pointer; transition: background .2s;
+  background: rgba(255,255,255,.15);
+  border: none;
+  color: var(--white);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-family: var(--font);
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
 }
-.btn-logout:hover { background: rgba(255,255,255,.25); }
 
-/* Panels */
-#panel-demandes { display: flex; flex: 1; }
-#panel-admin    { display: none; flex: 1; padding: 32px; max-width: 640px; margin: 0 auto; width: 100%; }
+.btn-logout:hover {
+  background: rgba(255,255,255,.25);
+}
 
-/* Sidebar form */
+/* ── Panels ────────────────────────────────────────────────────────────── */
+#panel-demandes {
+  display: flex;
+  flex: 1;
+  gap: 0;
+}
+
+#panel-admin {
+  display: none;
+  flex: 1;
+  padding: 40px 24px;
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* ── Sidebar form ──────────────────────────────────────────────────────── */
 #form-section {
-  width: 320px; min-width: 320px; background: var(--white);
-  border-right: 1px solid var(--border); padding: 24px;
+  width: 340px;
+  min-width: 340px;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  padding: 28px 24px;
+  overflow-y: auto;
+  height: calc(100vh - 60px);
+  position: sticky;
+  top: 60px;
 }
-#form-section h3 { font-size: 14px; font-weight: 700; color: var(--navy);
-                   margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid var(--orange); }
-#form-section .field textarea { resize: vertical; min-height: 90px; }
 
-.form-msg { font-size: 12px; margin-top: 10px; padding: 8px 10px; border-radius: 6px; }
-.form-msg.error   { background: #fde8e8; color: #c0392b; }
-.form-msg.success { background: #e8f5ee; color: var(--green); }
-
-/* List panel */
-.list-panel { flex: 1; padding: 24px; overflow-y: auto; }
-.list-panel-header {
-  display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;
+#form-section h3 {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 24px;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--orange);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.list-panel-header h3 { font-size: 16px; font-weight: 700; color: var(--navy); }
-#counter { font-size: 12px; color: var(--gray); background: var(--border);
-           border-radius: 20px; padding: 3px 10px; }
 
-/* Cards */
+#form-section .field textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+
+/* ── Stats Bar ─────────────────────────────────────────────────────────── */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 16px 24px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+.stat-card {
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-align: center;
+  transition: var(--transition);
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.stat-number {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--text);
+  display: block;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+  display: block;
+}
+
+.stat-nouveau .stat-number { color: var(--orange); }
+.stat-encours .stat-number { color: var(--blue); }
+.stat-resolu .stat-number { color: var(--green); }
+
+/* ── List panel ────────────────────────────────────────────────────────── */
+.list-panel {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  height: calc(100vh - 60px);
+  background: var(--bg);
+}
+
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.search-box {
+  flex: 1;
+  min-width: 200px;
+  position: relative;
+}
+
+.search-box input {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-card);
+  transition: var(--transition);
+}
+
+.search-box input:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
+}
+
+.search-box::before {
+  content: "🔍";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 16px;
+}
+
+.filter-group {
+  display: flex;
+  gap: 6px;
+}
+
+.filter-btn {
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.filter-btn:hover {
+  background: var(--bg);
+  border-color: var(--orange);
+}
+
+.filter-btn.active {
+  background: var(--orange);
+  color: var(--white);
+  border-color: var(--orange);
+}
+
+.btn-export {
+  background: var(--green);
+  color: var(--white);
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-export:hover {
+  background: var(--green-hover);
+  transform: translateY(-1px);
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+#list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 18px 20px; margin-bottom: 14px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.04); transition: box-shadow .2s;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  box-shadow: var(--shadow);
+  transition: var(--transition);
+  animation: fadeIn 0.3s ease;
 }
-.card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.08); }
-.card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
 .symbol-badge {
-  background: var(--navy); color: var(--white); border-radius: 8px;
-  padding: 6px 12px; font-size: 13px; font-weight: 700; font-family: monospace;
+  background: var(--navy);
+  color: var(--white);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
 }
-.card-meta { flex: 1; }
-.meta-who  { display: block; font-size: 13px; font-weight: 600; color: var(--navy); }
-.meta-date { font-size: 11px; color: var(--gray); }
 
-.badge { border-radius: 20px; padding: 4px 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
-.badge-new  { background: #FFF3E0; color: #E65100; animation: pulse-new 2s infinite; }
-.badge-wip  { background: #E3F2FD; color: #1565C0; }
-.badge-done { background: #E8F5E9; color: var(--green); }
+.card-meta {
+  flex: 1;
+}
+
+.meta-who {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.meta-date {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.card-badges {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.badge {
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.badge-new {
+  background: #FFF3E0;
+  color: #E65100;
+  animation: pulse-new 2s infinite;
+}
+
+.badge-wip {
+  background: var(--blue-light);
+  color: var(--blue);
+}
+
+.badge-done {
+  background: #E8F5E9;
+  color: var(--green);
+}
+
 @keyframes pulse-new {
-  0%,100% { box-shadow: 0 0 0 0 rgba(224,90,0,.3); }
-  50%      { box-shadow: 0 0 0 5px rgba(224,90,0,0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 90, 0, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(224, 90, 0, 0); }
 }
 
-.label-reason, .label-reply {
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: .06em; color: var(--gray); display: block; margin-bottom: 4px;
+.priority-badge {
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
-.card-reason p { font-size: 13px; color: #333; line-height: 1.5; }
+
+.priority-high {
+  background: #FFEBEE;
+  color: #C62828;
+}
+
+.priority-med {
+  background: #FFF9C4;
+  color: #F57F17;
+}
+
+.priority-low {
+  background: #E8F5E9;
+  color: #2E7D32;
+}
+
+.label-reason,
+.label-reply {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 6px;
+}
+
+.card-reason p {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
 .card-reply {
-  margin-top: 12px; background: #e8f5ee; border-radius: 8px;
-  padding: 10px 14px; border-left: 3px solid var(--green);
+  margin-top: 14px;
+  background: #e8f5ee;
+  border-radius: 10px;
+  padding: 14px 16px;
+  border-left: 4px solid var(--green);
 }
-.label-reply { color: var(--green); }
-.card-reply p { font-size: 13px; color: #1a3d2b; line-height: 1.5; }
-.reply-date { font-size: 11px; color: var(--gray); margin-top: 4px; display: block; }
+
+.label-reply {
+  color: var(--green);
+}
+
+.card-reply p {
+  font-size: 14px;
+  color: #1a3d2b;
+  line-height: 1.6;
+}
+
+.reply-date {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  display: block;
+}
 
 .card-actions {
-  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
-.select-status {
-  padding: 7px 10px; border: 1.5px solid var(--border); border-radius: 7px;
-  font-family: var(--font); font-size: 13px; color: var(--navy);
-  background: var(--bg); cursor: pointer;
+
+.action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
+
+.select-status,
+.select-priority {
+  padding: 9px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.select-status:focus,
+.select-priority:focus {
+  outline: none;
+  border-color: var(--green);
+}
+
 .reply-input {
-  width: 100%; padding: 9px 12px; border: 1.5px solid var(--border);
-  border-radius: 7px; font-family: var(--font); font-size: 13px;
-  color: var(--navy); resize: vertical; min-height: 70px; transition: border .2s;
+  width: 100%;
+  padding: 11px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  resize: vertical;
+  min-height: 80px;
+  transition: var(--transition);
 }
-.reply-input:focus { outline: none; border-color: var(--green); }
+
+.reply-input:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(46, 125, 82, 0.1);
+}
+
+.action-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .btn-reply {
-  align-self: flex-end; padding: 8px 18px; background: var(--green); color: var(--white);
-  border: none; border-radius: 7px; font-family: var(--font); font-size: 13px;
-  font-weight: 600; cursor: pointer; transition: background .2s;
+  padding: 10px 20px;
+  background: var(--green);
+  color: var(--white);
+  border: none;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
 }
-.btn-reply:hover    { background: #245f3e; }
-.btn-reply:disabled { opacity: .6; }
-.empty { text-align: center; color: var(--gray); padding: 60px 20px; font-size: 14px; }
 
-/* ── ADMIN PANEL ─────────────────────────────────────────────────────────── */
+.btn-reply:hover:not(:disabled) {
+  background: var(--green-hover);
+  transform: translateY(-1px);
+}
+
+.btn-reply:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-delete {
+  padding: 10px 16px;
+  background: var(--red-light);
+  color: var(--red);
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-delete:hover {
+  background: #f5c6c6;
+  transform: scale(1.05);
+}
+
+.empty {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 80px 20px;
+  font-size: 15px;
+}
+
+.empty-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+/* ── ADMIN PANEL ───────────────────────────────────────────────────────── */
 .admin-card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 28px; box-shadow: 0 2px 8px rgba(0,0,0,.04);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+  box-shadow: var(--shadow);
 }
+
 .admin-card h3 {
-  font-size: 16px; font-weight: 700; color: var(--navy);
-  margin-bottom: 6px; display: flex; align-items: center; gap: 8px;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
+
 .admin-card .admin-desc {
-  font-size: 13px; color: var(--gray); margin-bottom: 24px; line-height: 1.5;
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 28px;
+  line-height: 1.6;
 }
+
 .admin-add-row {
-  display: flex; gap: 10px; margin-bottom: 20px;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
 }
+
 .admin-add-row input {
-  flex: 1; padding: 10px 12px; border: 1.5px solid var(--border);
-  border-radius: 8px; font-family: var(--font); font-size: 14px; color: var(--navy);
-  transition: border .2s;
+  flex: 1;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-card);
+  transition: var(--transition);
 }
-.admin-add-row input:focus { outline: none; border-color: var(--orange); }
+
+.admin-add-row input:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
+}
+
 .btn-add {
-  padding: 10px 18px; background: var(--orange); color: var(--white);
-  border: none; border-radius: 8px; font-family: var(--font); font-size: 13px;
-  font-weight: 600; cursor: pointer; white-space: nowrap; transition: background .2s;
+  padding: 12px 20px;
+  background: var(--orange);
+  color: var(--white);
+  border: none;
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition);
 }
-.btn-add:hover { background: #c44e00; }
 
-.admin-divider { border: none; border-top: 1px solid var(--border); margin-bottom: 16px; }
-#admin-emails-list { display: flex; flex-direction: column; gap: 8px; }
+.btn-add:hover {
+  background: var(--orange-hover);
+  transform: translateY(-1px);
+}
+
+.admin-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+
+#admin-emails-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .admin-email-row {
-  display: flex; align-items: center; justify-content: space-between;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  transition: var(--transition);
 }
-.admin-email-text { font-size: 13px; color: var(--navy); font-weight: 500; }
-.btn-remove {
-  background: #fde8e8; color: #c0392b; border: none; border-radius: 6px;
-  padding: 5px 10px; font-size: 12px; font-family: var(--font); font-weight: 600;
-  cursor: pointer; transition: background .2s;
-}
-.btn-remove:hover { background: #f5c6c6; }
-.admin-empty { font-size: 13px; color: var(--gray); text-align: center; padding: 20px; }
-#admin-msg { margin-top: 12px; }
 
-/* Responsive */
-@media(max-width: 700px) {
-  #panel-demandes { flex-direction: column; }
-  #form-section { width: 100%; min-width: unset; border-right: none;
-                  border-bottom: 1px solid var(--border); }
-  .topbar-left h2 { display: none; }
-  .tabs { gap: 2px; }
-  .tab-btn { padding: 5px 10px; font-size: 12px; }
-  #panel-admin { padding: 16px; }
+.admin-email-row:hover {
+  background: var(--border);
+}
+
+.admin-email-text {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.btn-remove {
+  background: var(--red-light);
+  color: var(--red);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-remove:hover {
+  background: #f5c6c6;
+  transform: scale(1.05);
+}
+
+.admin-empty {
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 40px 20px;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  #panel-demandes {
+    flex-direction: column;
+  }
+  
+  #form-section {
+    width: 100%;
+    min-width: unset;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    position: static;
+    height: auto;
+  }
+  
+  .list-panel {
+    height: auto;
+  }
+  
+  .stats-bar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .topbar-left h2 {
+    display: none;
+  }
+  
+  .tabs {
+    gap: 4px;
+  }
+  
+  .tab-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar {
+    padding: 0 16px;
+    height: 56px;
+  }
+  
+  .user-pill {
+    display: none;
+  }
+  
+  .list-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .search-box {
+    min-width: unset;
+  }
+  
+  .filter-group {
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  
+  .stats-bar {
+    grid-template-columns: 1fr 1fr;
+    padding: 12px 16px;
+    gap: 8px;
+  }
+  
+  .stat-card {
+    padding: 10px 12px;
+  }
+  
+  .stat-number {
+    font-size: 20px;
+  }
+  
+  .card {
+    padding: 16px 18px;
+  }
+  
+  .action-row {
+    grid-template-columns: 1fr;
+  }
+  
+  #panel-admin {
+    padding: 20px 16px;
+  }
+}
+
+/* ── Accessibility ─────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>
 </head>
 <body>
 
-<!-- ═══ LOGIN ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ TOAST CONTAINER ═══════════════════════════════════════════════════ -->
+<div id="toast-container"></div>
+
+<!-- ═══ CONFIRM MODAL ════════════════════════════════════════════════════ -->
+<div id="confirm-modal">
+  <div class="modal-content">
+    <h3 id="confirm-title">Confirmer</h3>
+    <p id="confirm-message">Êtes-vous sûr ?</p>
+    <div class="modal-actions">
+      <button class="btn-modal btn-modal-cancel" id="confirm-no">Annuler</button>
+      <button class="btn-modal btn-modal-confirm" id="confirm-yes">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ LOGIN ═════════════════════════════════════════════════════════════ -->
 <div id="screen-login">
   <div class="login-box">
     <div class="login-logo">
@@ -517,19 +1717,18 @@ body { font-family: var(--font); background: var(--bg); color: #1a1a2e; min-heig
     <div class="field">
       <label>Adresse e-mail</label>
       <input type="email" id="login-email" placeholder="prenom.nom@domaine.fr"
-             onkeydown="if(event.key==='Enter') doLogin()">
+             onkeydown="if(event.key==='Enter') doLogin()" autocomplete="email">
     </div>
     <div class="field">
       <label>Mot de passe</label>
       <input type="password" id="login-pass" placeholder="••••••••"
-             onkeydown="if(event.key==='Enter') doLogin()">
+             onkeydown="if(event.key==='Enter') doLogin()" autocomplete="current-password">
     </div>
     <button class="btn-primary" onclick="doLogin()">Se connecter</button>
-    <div id="login-err"></div>
   </div>
 </div>
 
-<!-- ═══ APP ════════════════════════════════════════════════════════════════ -->
+<!-- ═══ APP ═══════════════════════════════════════════════════════════════ -->
 <div id="screen-app">
 
   <header class="topbar">
@@ -547,6 +1746,9 @@ body { font-family: var(--font); background: var(--bg); color: #1a1a2e; min-heig
       </nav>
     </div>
     <div class="topbar-right">
+      <button class="theme-toggle" onclick="toggleTheme()" title="Changer de thème">
+        <span id="theme-icon">🌙</span>
+      </button>
       <div class="user-pill">
         <strong id="user-email"></strong>
         <span class="role" id="user-role"></span>
@@ -559,28 +1761,76 @@ body { font-family: var(--font); background: var(--bg); color: #1a1a2e; min-heig
   <div id="panel-demandes">
 
     <aside id="form-section">
-      <h3>Nouvelle demande</h3>
+      <h3>📝 Nouvelle demande</h3>
       <div class="field">
-        <label>Symbole</label>
-        <input type="text" id="f-symbole" placeholder="ex. SYM-042">
+        <label>Symbole *</label>
+        <input type="text" id="f-symbole" placeholder="ex. SYM-042" maxlength="50">
       </div>
       <div class="field">
-        <label>Votre nom / prénom</label>
-        <input type="text" id="f-demandeur" placeholder="ex. Jean Dupont">
+        <label>Catégorie</label>
+        <select id="f-categorie">
+          <option value="bug">🐛 Bug / Erreur</option>
+          <option value="contenu">📝 Contenu / Texte</option>
+          <option value="design">🎨 Design / Visuel</option>
+          <option value="ajout">➕ Ajout</option>
+          <option value="autre">📦 Autre</option>
+        </select>
       </div>
       <div class="field">
-        <label>Raison de la demande</label>
-        <textarea id="f-raison" placeholder="Décrivez pourquoi cette popup doit être modifiée…"></textarea>
+        <label>Votre nom / prénom *</label>
+        <input type="text" id="f-demandeur" placeholder="ex. Jean Dupont" maxlength="100">
       </div>
-      <button class="btn-primary" id="btn-submit" onclick="submitDemande()">Envoyer la demande</button>
-      <div id="form-msg" class="form-msg"></div>
+      <div class="field">
+        <label>Raison de la demande *</label>
+        <textarea id="f-raison" placeholder="Décrivez pourquoi cette popup doit être modifiée…" maxlength="1000"></textarea>
+      </div>
+      <button class="btn-primary" id="btn-submit" onclick="submitDemande()">🚀 Envoyer la demande</button>
     </aside>
 
     <main class="list-panel">
-      <div class="list-panel-header">
-        <h3>Demandes en cours</h3>
-        <span id="counter">—</span>
+      <div class="stats-bar">
+        <div class="stat-card">
+          <span class="stat-number" id="stat-total">0</span>
+          <span class="stat-label">Total</span>
+        </div>
+        <div class="stat-card stat-nouveau">
+          <span class="stat-number" id="stat-nouveau">0</span>
+          <span class="stat-label">Nouveaux</span>
+        </div>
+        <div class="stat-card stat-encours">
+          <span class="stat-number" id="stat-encours">0</span>
+          <span class="stat-label">En cours</span>
+        </div>
+        <div class="stat-card stat-resolu">
+          <span class="stat-number" id="stat-resolu">0</span>
+          <span class="stat-label">Résolus</span>
+        </div>
       </div>
+
+      <div class="list-toolbar">
+        <div class="search-box">
+          <input type="text" id="search-input" placeholder="Rechercher (Ctrl+K)..."
+                 oninput="searchDemandes(this.value)">
+        </div>
+        <div class="filter-group">
+          <button class="filter-btn active" data-filter="all" onclick="filterDemandes('all')">
+            Tous
+          </button>
+          <button class="filter-btn" data-filter="nouveau" onclick="filterDemandes('nouveau')">
+            Nouveaux
+          </button>
+          <button class="filter-btn" data-filter="en_cours" onclick="filterDemandes('en_cours')">
+            En cours
+          </button>
+          <button class="filter-btn" data-filter="resolu" onclick="filterDemandes('resolu')">
+            Résolus
+          </button>
+        </div>
+        <button class="btn-export" id="btn-export" onclick="exportCSV()">
+          📥 Exporter CSV
+        </button>
+      </div>
+
       <div id="list"></div>
     </main>
 
@@ -603,7 +1853,6 @@ body { font-family: var(--font); background: var(--bg); color: #1a1a2e; min-heig
 
       <hr class="admin-divider">
       <div id="admin-emails-list"></div>
-      <div id="admin-msg" class="form-msg"></div>
     </div>
   </div>
 
