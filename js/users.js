@@ -15,7 +15,7 @@ import {
   getDocs,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { db, secondaryAuth } from "./firebase.js";
+import { db, secondaryAuth } from "./firebase.js?v=2";
 
 // Créer un nouvel utilisateur (par l'admin)
 export async function createUser(email, password, nom, role) {

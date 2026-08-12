@@ -133,7 +133,7 @@
           <div class="field">
             <label for="u-role">Rôle *</label>
             <select id="u-role">
-              <option value="demandeur">👤 Demandeur (fait des demandes)</option>
+              <option value="lecteur">👁 Lecteur (fait des demandes)</option>
               <option value="qualite">📧 Qualité (traite les demandes)</option>
               <option value="admin">👑 Admin (accès total)</option>
             </select>
@@ -152,6 +152,6 @@
   </div>
 
   <!-- ══════════ SCRIPTS ══════════ -->
-  <script type="module" src="js/app.js?v=2"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

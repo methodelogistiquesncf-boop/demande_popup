@@ -61,7 +61,7 @@ export function escapeHtml(str) {
 
 // Obtenir le label d'un rôle
 export function getRoleLabel(role) {
-  const labels = { admin: "Admin", qualite: "Qualité", demandeur: "Demandeur", lecteur: "Demandeur" };
+  const labels = { admin: "Admin", qualite: "Qualité", lecteur: "Lecteur" };
   return labels[role] || role;
 }
 

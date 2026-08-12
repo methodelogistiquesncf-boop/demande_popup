@@ -14,7 +14,7 @@ import {
   where,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { db } from "./firebase.js?v=2";
+import { db } from "./firebase.js";
 
 const COLLECTION = "demandes";
 
@@ -46,20 +46,15 @@ export async function getDemandes(userEmail, role) {
       // Admin et Qualité voient tout
       q = query(collection(db, COLLECTION), orderBy("dateCreation", "desc"));
     } else {
-      // Demandeur voit seulement SES demandes
+      // Lecteur voit seulement ses demandes
       q = query(
         collection(db, COLLECTION),
-        where("demandeurEmail", "==", userEmail)
+        where("demandeurEmail", "==", userEmail),
+        orderBy("dateCreation", "desc")
       );
     }
     const snapshot = await getDocs(q);
-    let demandes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    demandes.sort((a, b) => {
-      const ta = a.dateCreation && a.dateCreation.toMillis ? a.dateCreation.toMillis() : 0;
-      const tb = b.dateCreation && b.dateCreation.toMillis ? b.dateCreation.toMillis() : 0;
-      return tb - ta;
-    });
-    return demandes;
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (e) {
     console.error("Erreur chargement demandes:", e);
     return [];

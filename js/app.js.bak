@@ -2,11 +2,11 @@
 // POINT D'ENTRÉE DE L'APPLICATION
 // ═══════════════════════════════════════
 
-import { initAuth, login, logout, getCurrentUser, getCurrentRole } from "./auth.js?v=2";
-import { createUser, getAllUsers, updateUserRole, deleteUser } from "./users.js?v=2";
-import { createDemande, getDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js?v=2";
-import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatutLabel, getTypeLabel } from "./ui.js?v=2";
-import { ROLES } from "./config.js?v=2";
+import { initAuth, login, logout, getCurrentUser, getCurrentRole } from "./auth.js";
+import { createUser, getAllUsers, updateUserRole, deleteUser } from "./users.js";
+import { createDemande, getDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js";
+import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatutLabel, getTypeLabel } from "./ui.js";
+import { ROLES } from "./config.js";
 
 // ─── État global ───
 let currentTab = "demandes";
@@ -307,7 +307,7 @@ function renderUsers(users) {
       </div>
       <div class="user-card-right">
         <select data-action="role" data-id="${u.id}" ${u.id === currentUser.uid ? "disabled" : ""}>
-          <option value="demandeur" ${u.role === "demandeur" || u.role === "lecteur" ? "selected" : ""}>👤 Demandeur</option>
+          <option value="lecteur" ${u.role === "lecteur" ? "selected" : ""}>👁 Lecteur</option>
           <option value="qualite" ${u.role === "qualite" ? "selected" : ""}>📧 Qualité</option>
           <option value="admin" ${u.role === "admin" ? "selected" : ""}>👑 Admin</option>
         </select>

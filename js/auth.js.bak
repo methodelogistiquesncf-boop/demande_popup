@@ -8,7 +8,7 @@ import {
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { auth, db } from "./firebase.js?v=2";
+import { auth, db } from "./firebase.js";
 
 let currentUser = null;
 let currentRole = "demandeur";
@@ -68,10 +68,10 @@ async function getUserRole(uid) {
       const role = userDoc.data().role || "demandeur";
       return role === "lecteur" ? "demandeur" : role;
     }
-    return "demandeur";
+    return "lecteur";
   } catch (e) {
     console.error("Erreur chargement rôle:", e);
-    return "demandeur";
+    return "lecteur";
   }
 }
 
