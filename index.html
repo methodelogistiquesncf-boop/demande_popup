@@ -3,19 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Demandes Modification Popups</title>
+<title>Demandes Modification Popups — V2</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+           createUserWithEmailAndPassword, deleteUser, listUsers }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
   import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
-           query, orderBy, where, onSnapshot, serverTimestamp, getDoc, setDoc, getDocs }
+           query, orderBy, where, onSnapshot, serverTimestamp, getDoc, setDoc, getDocs,
+           writeBatch, getCountFromServer }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-  // ── 🔧 CONFIGURATION FIREBASE ─────────────────────────────────────────────
   const firebaseConfig = {
     apiKey: "AIzaSyAgyjanFGdNCe23ptWtrLgI1wUSZij5y9I",
     authDomain: "popup-67e28.firebaseapp.com",
@@ -25,28 +26,33 @@
     appId: "1:1089603775753:web:0eda8de1f0b5d6e34af7d8"
   };
 
-  // Email initial (garde de secours si tous les admins sont supprimés)
   const INITIAL_ADMIN = "michael.frischherz@sncf.fr";
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
   const rolesRef = doc(db, "config", "roles");
+  const usersRef = collection(db, "users");
   const logsRef = collection(db, "logs", "role_changes", "history");
 
   let currentUser = null;
-  let isQualite = false;
-  let isAdmin = false;
+  let userRole = "lecteur"; // 'admin' | 'qualite' | 'lecteur'
   let adminEmails = [];
   let qualiteEmails = [];
+  let allUsers = []; // { uid, email, role, displayName, lastLogin, createdAt }
   let unsubDemandes = null;
+  let unsubUsers = null;
   let activeTab = "demandes";
   let allDemandes = [];
   let currentFilter = "all";
   let currentSearch = "";
+  let userSearch = "";
+  let userRoleFilter = "all";
   let formModified = false;
+  let currentPage = 1;
+  const ITEMS_PER_PAGE = 20;
 
-  // ── 🎨 Thème ────────────────────────────────────────────────────────────
+  // ── Thème ──────────────────────────────────────────────────────────
   const savedTheme = localStorage.getItem("theme") || "light";
   document.documentElement.setAttribute("data-theme", savedTheme);
 
@@ -58,7 +64,7 @@
     document.getElementById("theme-icon").textContent = newTheme === "dark" ? "☀️" : "🌙";
   };
 
-  // ── 📅 Utilitaires ──────────────────────────────────────────────────────
+  // ── Utilitaires ────────────────────────────────────────────────────
   function fmt(ts) {
     if (!ts) return "—";
     const d = ts.toDate ? ts.toDate() : new Date(ts);
@@ -94,18 +100,40 @@
     return `<span class="priority-badge ${p.cls}">${p.icon} ${p.label}</span>`;
   }
 
-  // ── 🔔 Notifications Toast ──────────────────────────────────────────────
+  function roleBadge(role) {
+    const map = {
+      admin: { label: "Admin", cls: "role-admin", icon: "👑" },
+      qualite: { label: "Qualité", cls: "role-qualite", icon: "📧" },
+      lecteur: { label: "Lecteur", cls: "role-lecteur", icon: "👁" },
+    };
+    const r = map[role] || map.lecteur;
+    return `<span class="role-badge ${r.cls}">${r.icon} ${r.label}</span>`;
+  }
+
+  function sanitize(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function validateEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  // ── Toast ──────────────────────────────────────────────────────────
   function showToast(message, type = "info", duration = 4000) {
     const toast = document.createElement("div");
     toast.className = `toast toast-${type}`;
     toast.innerHTML = `
       <div class="toast-content">
         <span class="toast-icon">${type === "success" ? "✓" : type === "error" ? "✕" : "ℹ"}</span>
-        <span class="toast-message">${message}</span>
-      </div>
-    `;
+        <span class="toast-message">${sanitize(message)}</span>
+      </div>`;
     document.getElementById("toast-container").appendChild(toast);
-    
     setTimeout(() => toast.classList.add("show"), 100);
     setTimeout(() => {
       toast.classList.remove("show");
@@ -113,23 +141,25 @@
     }, duration);
   }
 
-  // ── 🎯 Confirmation modale ──────────────────────────────────────────────
-  function showConfirm(title, message) {
+  // ── Confirmation modale ───────────────────────────────────────────
+  function showConfirm(title, message, confirmText = "Confirmer", cancelText = "Annuler") {
     return new Promise(resolve => {
       const modal = document.getElementById("confirm-modal");
       document.getElementById("confirm-title").textContent = title;
       document.getElementById("confirm-message").textContent = message;
+      document.getElementById("confirm-yes").textContent = confirmText;
+      document.getElementById("confirm-no").textContent = cancelText;
       modal.classList.add("show");
-      
+
       const confirm = () => { modal.classList.remove("show"); resolve(true); };
       const cancel = () => { modal.classList.remove("show"); resolve(false); };
-      
+
       document.getElementById("confirm-yes").onclick = confirm;
       document.getElementById("confirm-no").onclick = cancel;
     });
   }
 
-  // ── 📊 Chargement des rôles ─────────────────────────────────────────────
+  // ── Gestion des rôles ──────────────────────────────────────────────
   async function loadRoles() {
     try {
       const snap = await getDoc(rolesRef);
@@ -137,14 +167,11 @@
         const data = snap.data();
         adminEmails = data.admin || [];
         qualiteEmails = data.qualite || [];
-        
-        // S'assurer qu'il y a toujours au moins un admin
         if (adminEmails.length === 0) {
           adminEmails = [INITIAL_ADMIN];
           await saveRoles();
         }
       } else {
-        // Première initialisation
         adminEmails = [INITIAL_ADMIN];
         qualiteEmails = [];
         await saveRoles();
@@ -156,124 +183,223 @@
   }
 
   async function saveRoles() {
-    await setDoc(rolesRef, { 
-      admin: adminEmails,
-      qualite: qualiteEmails 
-    });
+    await setDoc(rolesRef, { admin: adminEmails, qualite: qualiteEmails });
   }
 
-  // ── 📝 Logs des changements de rôles ────────────────────────────────────
-  async function logRoleChange(action, targetEmail, details = "") {
+  function getRoleForEmail(email) {
+    if (adminEmails.includes(email)) return "admin";
+    if (qualiteEmails.includes(email)) return "qualite";
+    return "lecteur";
+  }
+
+  // ── Journalisation robuste ─────────────────────────────────────────
+  async function logChange(action, targetEmail, details = "") {
     try {
       await addDoc(logsRef, {
-        userEmail: currentUser.email,
+        userEmail: currentUser?.email || "system",
+        userRole: getRoleForEmail(currentUser?.email || ""),
         action,
         targetEmail,
         details,
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        ip: null // Could be added via external API
       });
     } catch (e) {
       console.error("Erreur log:", e);
     }
   }
 
-  // ── 📋 Onglets ──────────────────────────────────────────────────────────
+  // ── Gestion des utilisateurs (document users) ──────────────────────
+  async function registerUserInDB(user) {
+    const userDoc = doc(db, "users", user.uid);
+    const snap = await getDoc(userDoc);
+    if (!snap.exists()) {
+      await setDoc(userDoc, {
+        email: user.email,
+        displayName: user.displayName || "",
+        role: getRoleForEmail(user.email),
+        createdAt: serverTimestamp(),
+        lastLogin: serverTimestamp(),
+        demandesCount: 0,
+        active: true
+      });
+    } else {
+      await updateDoc(userDoc, {
+        lastLogin: serverTimestamp(),
+        role: getRoleForEmail(user.email)
+      });
+    }
+  }
+
+  async function loadUsers() {
+    try {
+      const snap = await getDocs(query(usersRef, orderBy("lastLogin", "desc")));
+      allUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+      console.error("Erreur chargement users:", e);
+      allUsers = [];
+    }
+  }
+
+  // ── Onglets ────────────────────────────────────────────────────────
   window.switchTab = function(tab) {
     activeTab = tab;
-    document.querySelectorAll(".tab-btn").forEach(b => 
+    document.querySelectorAll(".tab-btn").forEach(b =>
       b.classList.toggle("active", b.dataset.tab === tab));
     document.getElementById("panel-demandes").style.display = tab === "demandes" ? "flex" : "none";
     document.getElementById("panel-admin").style.display = tab === "admin" ? "block" : "none";
     if (tab === "admin") renderAdmin();
   };
 
-  // ── 🔍 Filtres & Recherche ──────────────────────────────────────────────
+  // ── Filtres & Recherche Demandes ───────────────────────────────────
   window.filterDemandes = function(filter) {
     currentFilter = filter;
-    document.querySelectorAll(".filter-btn").forEach(b => 
+    currentPage = 1;
+    document.querySelectorAll(".filter-btn").forEach(b =>
       b.classList.toggle("active", b.dataset.filter === filter));
     renderDemandes(getFilteredDemandes());
   };
 
-  window.searchDemandes = function(query) {
-    currentSearch = query.toLowerCase();
+  window.searchDemandes = function(q) {
+    currentSearch = q.toLowerCase();
+    currentPage = 1;
     renderDemandes(getFilteredDemandes());
+  };
+
+  window.searchUsers = function(q) {
+    userSearch = q.toLowerCase();
+    renderUsers();
+  };
+
+  window.filterUsers = function(role) {
+    userRoleFilter = role;
+    document.querySelectorAll(".user-filter-btn").forEach(b =>
+      b.classList.toggle("active", b.dataset.role === role));
+    renderUsers();
   };
 
   function getFilteredDemandes() {
     let filtered = allDemandes;
-    
     if (currentFilter !== "all") {
       filtered = filtered.filter(d => d.statut === currentFilter);
     }
-    
     if (currentSearch) {
-      filtered = filtered.filter(d => 
-        d.symbole.toLowerCase().includes(currentSearch) ||
-        d.demandeur.toLowerCase().includes(currentSearch) ||
-        d.raison.toLowerCase().includes(currentSearch) ||
-        (d.reponse && d.reponse.toLowerCase().includes(currentSearch))
+      filtered = filtered.filter(d =>
+        (d.symbole || "").toLowerCase().includes(currentSearch) ||
+        (d.demandeur || "").toLowerCase().includes(currentSearch) ||
+        (d.raison || "").toLowerCase().includes(currentSearch) ||
+        (d.reponse && d.reponse.toLowerCase().includes(currentSearch)) ||
+        (d.demandeurEmail && d.demandeurEmail.toLowerCase().includes(currentSearch))
       );
     }
-    
     return filtered;
   }
 
-  // ── 📈 Statistiques ─────────────────────────────────────────────────────
+  function getFilteredUsers() {
+    let filtered = allUsers;
+    if (userRoleFilter !== "all") {
+      const roleMap = { admin: "admin", qualite: "qualite", lecteur: "lecteur" };
+      filtered = filtered.filter(u => {
+        const r = getRoleForEmail(u.email);
+        return r === roleMap[userRoleFilter];
+      });
+    }
+    if (userSearch) {
+      filtered = filtered.filter(u =>
+        (u.email || "").toLowerCase().includes(userSearch) ||
+        (u.displayName || "").toLowerCase().includes(userSearch)
+      );
+    }
+    return filtered;
+  }
+
+  // ── Statistiques ──────────────────────────────────────────────────
   function updateStats(demandes) {
     const total = demandes.length;
     const nouveau = demandes.filter(d => d.statut === "nouveau").length;
     const enCours = demandes.filter(d => d.statut === "en_cours").length;
     const resolu = demandes.filter(d => d.statut === "resolu").length;
-    
+
     document.getElementById("stat-total").textContent = total;
     document.getElementById("stat-nouveau").textContent = nouveau;
     document.getElementById("stat-encours").textContent = enCours;
     document.getElementById("stat-resolu").textContent = resolu;
-    
-    document.getElementById("counter").textContent = 
-      isQualite ? `${nouveau} en attente` : `${total} demande(s)`;
   }
 
-  // ── 📝 Rendu liste demandes ─────────────────────────────────────────────
+  // ── Pagination ────────────────────────────────────────────────────
+  function renderPagination(total) {
+    const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
+    const pagination = document.getElementById("pagination");
+    if (totalPages <= 1) {
+      pagination.innerHTML = "";
+      return;
+    }
+    let html = '<div class="pagination-controls">';
+    html += `<button onclick="changePage(${Math.max(1, currentPage - 1)})" ${currentPage === 1 ? 'disabled' : ''}>‹</button>`;
+    for (let i = 1; i <= totalPages; i++) {
+      if (i === 1 || i === totalPages || (i >= currentPage - 1 && i <= currentPage + 1)) {
+        html += `<button class="${i === currentPage ? 'active' : ''}" onclick="changePage(${i})">${i}</button>`;
+      } else if (i === currentPage - 2 || i === currentPage + 2) {
+        html += `<span class="ellipsis">…</span>`;
+      }
+    }
+    html += `<button onclick="changePage(${Math.min(totalPages, currentPage + 1)})" ${currentPage === totalPages ? 'disabled' : ''}>›</button>`;
+    html += `<span class="pagination-info">Page ${currentPage}/${totalPages} (${total} résultats)</span>`;
+    html += '</div>';
+    pagination.innerHTML = html;
+  }
+
+  window.changePage = function(page) {
+    currentPage = page;
+    renderDemandes(getFilteredDemandes());
+  };
+
+  // ── Rendu liste demandes ──────────────────────────────────────────
   function renderDemandes(demandes) {
     const list = document.getElementById("list");
-    
+    const isPrivileged = userRole === "admin" || userRole === "qualite";
+
     if (!demandes.length) {
       list.innerHTML = `
         <div class="empty">
           <div class="empty-icon">📭</div>
-          <p>${currentFilter !== "all" || currentSearch 
-            ? "Aucune demande ne correspond à vos critères." 
+          <p>${currentFilter !== "all" || currentSearch
+            ? "Aucune demande ne correspond à vos critères."
             : "Aucune demande pour le moment."}</p>
         </div>`;
+      document.getElementById("pagination").innerHTML = "";
       return;
     }
-    
-    list.innerHTML = demandes.map(d => `
+
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    const pageDemandes = demandes.slice(start, start + ITEMS_PER_PAGE);
+
+    list.innerHTML = pageDemandes.map(d => `
       <div class="card" data-id="${d.id}">
         <div class="card-header">
-          <div class="symbol-badge">${d.symbole}</div>
+          <div class="symbol-badge">${sanitize(d.symbole)}</div>
           <div class="card-meta">
-            <span class="meta-who">${d.demandeur}</span>
+            <span class="meta-who">${sanitize(d.demandeur)}</span>
             <span class="meta-date">${fmt(d.dateDemande)}</span>
+            ${isPrivileged ? `<span class="meta-email">${sanitize(d.demandeurEmail)}</span>` : ""}
           </div>
           <div class="card-badges">
             ${statusBadge(d.statut)}
             ${d.priorite ? priorityBadge(d.priorite) : ""}
           </div>
         </div>
+        ${d.categorie ? `<div class="card-category"><span class="cat-label">${getCategoryLabel(d.categorie)}</span></div>` : ""}
         <div class="card-reason">
           <span class="label-reason">Raison</span>
-          <p>${d.raison}</p>
+          <p>${sanitize(d.raison)}</p>
         </div>
         ${d.reponse ? `
         <div class="card-reply">
           <span class="label-reply">✓ Réponse Qualité</span>
-          <p>${d.reponse}</p>
-          <span class="reply-date">${fmt(d.dateReponse)}</span>
+          <p>${sanitize(d.reponse)}</p>
+          <span class="reply-date">${fmt(d.dateReponse)} ${d.repondantEmail ? `— ${sanitize(d.repondantEmail)}` : ""}</span>
         </div>` : ""}
-        ${isQualite ? `
+        ${isPrivileged ? `
         <div class="card-actions">
           <div class="action-row">
             <select class="select-status" data-id="${d.id}">
@@ -288,7 +414,7 @@
               <option value="basse" ${d.priorite === "basse" ? "selected" : ""}>🟢 Basse</option>
             </select>
           </div>
-          <textarea class="reply-input" placeholder="Réponse du service Qualité…" data-id="${d.id}">${d.reponse || ""}</textarea>
+          <textarea class="reply-input" placeholder="Réponse du service Qualité…" data-id="${d.id}">${sanitize(d.reponse || "")}</textarea>
           <div class="action-buttons">
             <button class="btn-reply" data-id="${d.id}">💾 Enregistrer</button>
             <button class="btn-delete" data-id="${d.id}" title="Supprimer">🗑️</button>
@@ -297,26 +423,34 @@
       </div>
     `).join("");
 
+    renderPagination(demandes.length);
+
     list.querySelectorAll(".btn-reply").forEach(btn => {
       btn.addEventListener("click", async () => {
         const id = btn.dataset.id;
         const reponse = list.querySelector(`.reply-input[data-id="${id}"]`).value.trim();
         const statut = list.querySelector(`.select-status[data-id="${id}"]`).value;
         const priorite = list.querySelector(`.select-priority[data-id="${id}"]`).value || null;
-        
+
         if (!reponse) {
           showToast("Veuillez saisir une réponse.", "error");
           return;
         }
-        
+        if (reponse.length > 2000) {
+          showToast("Réponse trop longue (max 2000 caractères).", "error");
+          return;
+        }
+
         btn.disabled = true;
         btn.textContent = "⏳";
         try {
           await updateDoc(doc(db, "demandes", id), {
             reponse, statut, priorite,
             dateReponse: serverTimestamp(),
-            repondantEmail: currentUser.email
+            repondantEmail: currentUser.email,
+            repondantRole: userRole
           });
+          await logChange("reply_demande", id, `Statut: ${statut}, Priorité: ${priorite || "—"}`);
           showToast("Réponse enregistrée !", "success");
           btn.textContent = "✓";
         } catch (e) {
@@ -332,12 +466,14 @@
         const id = btn.dataset.id;
         const confirmed = await showConfirm(
           "Supprimer la demande",
-          "Cette action est irréversible. Voulez-vous vraiment supprimer cette demande ?"
+          "Cette action est irréversible. Voulez-vous vraiment supprimer cette demande ?",
+          "Supprimer", "Annuler"
         );
         if (!confirmed) return;
-        
+
         try {
           await deleteDoc(doc(db, "demandes", id));
+          await logChange("delete_demande", id, "Demande supprimée");
           showToast("Demande supprimée", "success");
         } catch (e) {
           showToast("Erreur : " + e.message, "error");
@@ -346,74 +482,115 @@
     });
   }
 
-  // ── 📡 Écoute temps réel ────────────────────────────────────────────────
+  function getCategoryLabel(cat) {
+    const map = {
+      bug: "🐛 Bug / Erreur",
+      contenu: "📝 Contenu / Texte",
+      design: "🎨 Design / Visuel",
+      ajout: "➕ Ajout",
+      autre: "📦 Autre"
+    };
+    return map[cat] || map.autre;
+  }
+
+  // ── Écoute temps réel ─────────────────────────────────────────────
   function startListen() {
     if (unsubDemandes) unsubDemandes();
     const q = query(collection(db, "demandes"), orderBy("dateDemande", "desc"));
-    
+
     unsubDemandes = onSnapshot(q, snap => {
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      allDemandes = isQualite ? all : all.filter(d => d.demandeurEmail === currentUser.email);
-      
+      const isPrivileged = userRole === "admin" || userRole === "qualite";
+      allDemandes = isPrivileged ? all : all.filter(d => d.demandeurEmail === currentUser.email);
+
       updateStats(allDemandes);
       renderDemandes(getFilteredDemandes());
     });
   }
 
-  // ── 📤 Nouvelle demande ─────────────────────────────────────────────────
+  // ── Nouvelle demande ──────────────────────────────────────────────
   window.submitDemande = async function() {
     const symbole = document.getElementById("f-symbole").value.trim();
     const raison = document.getElementById("f-raison").value.trim();
     const demandeur = document.getElementById("f-demandeur").value.trim();
     const categorie = document.getElementById("f-categorie").value;
-    
+
     if (!symbole || !raison || !demandeur) {
       showToast("Veuillez remplir tous les champs obligatoires.", "error");
       return;
     }
-    
+    if (symbole.length > 50) {
+      showToast("Symbole trop long (max 50 caractères).", "error");
+      return;
+    }
+    if (raison.length > 1000) {
+      showToast("Raison trop longue (max 1000 caractères).", "error");
+      return;
+    }
+    if (demandeur.length > 100) {
+      showToast("Nom trop long (max 100 caractères).", "error");
+      return;
+    }
+
     const btn = document.getElementById("btn-submit");
     btn.disabled = true;
     btn.textContent = "⏳ Envoi…";
-    
+
     try {
       await addDoc(collection(db, "demandes"), {
         symbole, raison, demandeur, categorie,
         demandeurEmail: currentUser.email,
+        demandeurRole: userRole,
         dateDemande: serverTimestamp(),
         statut: "nouveau",
         reponse: null,
         dateReponse: null,
         priorite: null
       });
-      
+
       document.getElementById("f-symbole").value = "";
       document.getElementById("f-raison").value = "";
       document.getElementById("f-demandeur").value = "";
       document.getElementById("f-categorie").value = "autre";
       formModified = false;
-      
+
+      await logChange("create_demande", symbole, "Nouvelle demande créée");
       showToast("Demande envoyée au service Qualité !", "success");
     } catch (e) {
       showToast("Erreur : " + e.message, "error");
     }
-    
+
     btn.disabled = false;
     btn.textContent = "🚀 Envoyer la demande";
   };
 
-  // ── ⚙️ ADMIN : Gestion des rôles ────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════
+  // ADMINISTRATION
+  // ═══════════════════════════════════════════════════════════════════
+
   function renderAdmin() {
+    renderAdminStats();
     renderAdminSection();
+    renderUsers();
     renderAdminLogs();
   }
 
+  function renderAdminStats() {
+    const totalUsers = allUsers.length;
+    const totalAdmins = adminEmails.length;
+    const totalQualite = qualiteEmails.length;
+    const totalLecteurs = totalUsers - totalAdmins - totalQualite;
+    const totalDemandes = allDemandes.length;
+
+    document.getElementById("stat-admins").textContent = totalAdmins;
+    document.getElementById("stat-qualite").textContent = totalQualite;
+    document.getElementById("stat-lecteurs").textContent = Math.max(0, totalLecteurs);
+    document.getElementById("stat-users-total").textContent = totalUsers;
+    document.getElementById("stat-demandes-total").textContent = totalDemandes;
+  }
+
   function renderAdminSection() {
-    // Stats des rôles
-    document.getElementById("stat-admins").textContent = adminEmails.length;
-    document.getElementById("stat-qualite").textContent = qualiteEmails.length;
-    
-    // Liste des admins
+    // Admins
     const adminPanel = document.getElementById("admin-list");
     if (!adminEmails.length) {
       adminPanel.innerHTML = `<div class="admin-empty">Aucun administrateur.</div>`;
@@ -421,24 +598,27 @@
       adminPanel.innerHTML = adminEmails.map((email, i) => `
         <div class="admin-email-row">
           <div class="admin-email-info">
-            <span class="admin-email-text">👑 ${email}</span>
-            ${email === INITIAL_ADMIN ? '<span class="admin-badge">Admin initial</span>' : ''}
+            <span class="admin-email-text">👑 ${sanitize(email)}</span>
+            ${email === INITIAL_ADMIN ? '<span class="admin-badge">Initial</span>' : ''}
           </div>
           <div class="admin-email-actions">
             ${email !== currentUser.email ? `
-              <button class="btn-promote" onclick="promoteToQualite('${email}')" title="Promouvoir en Qualité">
-                ⬆️ Qualité
+              <button class="btn-role btn-role-qualite" onclick="changeRole('${sanitize(email)}', 'qualite')" title="Passer en Qualité">
+                📧 Qualité
               </button>
-              <button class="btn-remove" onclick="removeAdmin(${i})" title="Retirer les droits admin">
-                ✕ Retirer
+              <button class="btn-role btn-role-lecteur" onclick="changeRole('${sanitize(email)}', 'lecteur')" title="Passer en Lecteur">
+                👁 Lecteur
+              </button>
+              <button class="btn-remove" onclick="removeAdmin(${i})" title="Retirer">
+                ✕
               </button>
             ` : '<span class="admin-self">Vous</span>'}
           </div>
         </div>
       `).join("");
     }
-    
-    // Liste des Qualité
+
+    // Qualité
     const qualitePanel = document.getElementById("qualite-list");
     if (!qualiteEmails.length) {
       qualitePanel.innerHTML = `<div class="admin-empty">Aucun membre Qualité.</div>`;
@@ -446,14 +626,17 @@
       qualitePanel.innerHTML = qualiteEmails.map((email, i) => `
         <div class="admin-email-row">
           <div class="admin-email-info">
-            <span class="admin-email-text">📧 ${email}</span>
+            <span class="admin-email-text">📧 ${sanitize(email)}</span>
           </div>
           <div class="admin-email-actions">
-            <button class="btn-promote" onclick="promoteToAdmin('${email}')" title="Promouvoir en Admin">
-              ⬆️ Admin
+            <button class="btn-role btn-role-admin" onclick="changeRole('${sanitize(email)}', 'admin')" title="Promouvoir Admin">
+              👑 Admin
             </button>
-            <button class="btn-remove" onclick="removeQualite(${i})" title="Retirer du service Qualité">
-              ✕ Retirer
+            <button class="btn-role btn-role-lecteur" onclick="changeRole('${sanitize(email)}', 'lecteur')" title="Passer en Lecteur">
+              👁 Lecteur
+            </button>
+            <button class="btn-remove" onclick="removeQualite(${i})" title="Retirer">
+              ✕
             </button>
           </div>
         </div>
@@ -461,80 +644,208 @@
     }
   }
 
+  // ── Gestion utilisateurs ──────────────────────────────────────────
+  function renderUsers() {
+    const filtered = getFilteredUsers();
+    const panel = document.getElementById("users-list");
+
+    if (!filtered.length) {
+      panel.innerHTML = `<div class="admin-empty">Aucun utilisateur trouvé.</div>`;
+      return;
+    }
+
+    panel.innerHTML = filtered.map(u => {
+      const role = getRoleForEmail(u.email);
+      return `
+        <div class="user-row">
+          <div class="user-info">
+            <div class="user-avatar">${(u.email || "?")[0].toUpperCase()}</div>
+            <div class="user-details">
+              <div class="user-email">${sanitize(u.email)}</div>
+              <div class="user-meta">
+                ${u.displayName ? `<span>${sanitize(u.displayName)}</span>` : ""}
+                <span>Inscrit ${fmt(u.createdAt)}</span>
+                <span>Dernière connexion ${fmt(u.lastLogin)}</span>
+              </div>
+            </div>
+          </div>
+          <div class="user-role-info">${roleBadge(role)}</div>
+          <div class="user-actions">
+            <select class="user-role-select" data-email="${sanitize(u.email)}" data-uid="${u.id}" onchange="onUserRoleChange(this)">
+              <option value="admin" ${role === 'admin' ? 'selected' : ''}>👑 Admin</option>
+              <option value="qualite" ${role === 'qualite' ? 'selected' : ''}>📧 Qualité</option>
+              <option value="lecteur" ${role === 'lecteur' ? 'selected' : ''}>👁 Lecteur</option>
+            </select>
+            <button class="btn-user-action btn-user-delete" onclick="deleteUser('${u.id}', '${sanitize(u.email)}')" title="Supprimer">
+              🗑️
+            </button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  window.onUserRoleChange = async function(select) {
+    const email = select.dataset.email;
+    const newRole = select.value;
+    const oldRole = getRoleForEmail(email);
+
+    if (newRole === oldRole) return;
+
+    const confirmed = await showConfirm(
+      "Changer le rôle",
+      `Changer le rôle de ${email} de "${oldRole}" vers "${newRole}" ?`,
+      "Changer", "Annuler"
+    );
+    if (!confirmed) {
+      select.value = oldRole;
+      return;
+    }
+
+    await changeRole(email, newRole);
+  };
+
+  window.changeRole = async function(email, newRole) {
+    const oldRole = getRoleForEmail(email);
+    if (oldRole === newRole) return;
+
+    // Retirer de l'ancien rôle
+    adminEmails = adminEmails.filter(e => e !== email);
+    qualiteEmails = qualiteEmails.filter(e => e !== email);
+
+    // Ajouter au nouveau rôle si applicable
+    if (newRole === "admin") adminEmails = [...adminEmails, email];
+    if (newRole === "qualite") qualiteEmails = [...qualiteEmails, email];
+
+    await saveRoles();
+
+    // Mettre à jour le document user
+    const userQuery = query(usersRef, where("email", "==", email));
+    const snap = await getDocs(userQuery);
+    snap.forEach(async (d) => {
+      await updateDoc(doc(db, "users", d.id), { role: newRole });
+    });
+
+    await logChange("change_role", email, `De "${oldRole}" vers "${newRole}"`);
+    showToast(`${email} est maintenant ${newRole}.`, "success");
+
+    if (currentUser && email === currentUser.email) {
+      userRole = newRole;
+      document.getElementById("user-role").textContent = getRoleLabel(newRole);
+      // Recharger les permissions
+      document.getElementById("tab-admin").style.display = userRole === "admin" ? "inline-flex" : "none";
+      document.getElementById("form-section").style.display = (userRole === "lecteur") ? "block" : "none";
+    }
+
+    renderAdmin();
+  };
+
+  window.deleteUser = async function(uid, email) {
+    if (email === currentUser.email) {
+      showToast("Vous ne pouvez pas supprimer votre propre compte.", "error");
+      return;
+    }
+    if (email === INITIAL_ADMIN) {
+      showToast("Le compte administrateur initial ne peut pas être supprimé.", "error");
+      return;
+    }
+
+    const confirmed = await showConfirm(
+      "Supprimer l'utilisateur",
+      `Supprimer définitivement le compte de ${email} ? Cette action est irréversible.`,
+      "Supprimer", "Annuler"
+    );
+    if (!confirmed) return;
+
+    try {
+      // Supprimer des rôles
+      adminEmails = adminEmails.filter(e => e !== email);
+      qualiteEmails = qualiteEmails.filter(e => e !== email);
+      await saveRoles();
+
+      // Supprimer le document user
+      await deleteDoc(doc(db, "users", uid));
+
+      await logChange("delete_user", email, "Compte utilisateur supprimé");
+      showToast(`${email} supprimé.`, "success");
+      renderAdmin();
+    } catch (e) {
+      showToast("Erreur : " + e.message, "error");
+    }
+  };
+
   async function renderAdminLogs() {
     const logsPanel = document.getElementById("admin-logs");
     try {
       const q = query(logsRef, orderBy("timestamp", "desc"));
       const snap = await getDocs(q);
-      
+
       if (snap.empty) {
         logsPanel.innerHTML = `<div class="admin-empty">Aucun historique.</div>`;
         return;
       }
-      
-      const logs = snap.docs.slice(0, 20).map(doc => ({ id: doc.id, ...doc.data() }));
-      
+
+      const logs = snap.docs.slice(0, 50).map(d => ({ id: d.id, ...d.data() }));
+
       logsPanel.innerHTML = logs.map(log => {
         const actionLabels = {
           "add_admin": { label: "Ajout admin", icon: "👑", color: "var(--orange)" },
           "remove_admin": { label: "Retrait admin", icon: "❌", color: "var(--red)" },
           "add_qualite": { label: "Ajout Qualité", icon: "📧", color: "var(--blue)" },
           "remove_qualite": { label: "Retrait Qualité", icon: "❌", color: "var(--red)" },
-          "promote_admin": { label: "Promotion admin", icon: "⬆️", color: "var(--green)" },
-          "promote_qualite": { label: "Promotion Qualité", icon: "⬆️", color: "var(--blue)" }
+          "change_role": { label: "Changement rôle", icon: "🔄", color: "var(--blue)" },
+          "delete_user": { label: "Suppression user", icon: "🗑️", color: "var(--red)" },
+          "create_demande": { label: "Création demande", icon: "📝", color: "var(--green)" },
+          "reply_demande": { label: "Réponse demande", icon: "💬", color: "var(--blue)" },
+          "delete_demande": { label: "Suppression demande", icon: "🗑️", color: "var(--red)" },
+          "login": { label: "Connexion", icon: "🔑", color: "var(--green)" },
         };
-        
+
         const action = actionLabels[log.action] || { label: log.action, icon: "📝", color: "var(--text-secondary)" };
-        
+
         return `
           <div class="log-entry">
             <div class="log-header">
               <span class="log-icon" style="color: ${action.color}">${action.icon}</span>
               <span class="log-action">${action.label}</span>
-              <span class="log-target">${log.targetEmail}</span>
+              <span class="log-target">${sanitize(log.targetEmail)}</span>
             </div>
             <div class="log-meta">
-              <span class="log-user">Par ${log.userEmail}</span>
+              <span class="log-user">Par ${sanitize(log.userEmail)} ${log.userRole ? `(${log.userRole})` : ""}</span>
               <span class="log-date">${fmt(log.timestamp)}</span>
             </div>
-            ${log.details ? `<div class="log-details">${log.details}</div>` : ""}
+            ${log.details ? `<div class="log-details">${sanitize(log.details)}</div>` : ""}
           </div>
         `;
       }).join("");
     } catch (e) {
-      logsPanel.innerHTML = `<div class="admin-empty">Erreur de chargement.</div>`;
+      logsPanel.innerHTML = `<div class="admin-empty">Erreur de chargement des logs.</div>`;
     }
   }
 
-  // ── Gestion des Admins ──────────────────────────────────────────────────
+  function getRoleLabel(role) {
+    return { admin: "Administrateur", qualite: "Service Qualité", lecteur: "Lecteur" }[role] || "Lecteur";
+  }
+
+  // ── Fonctions admin rôles (legacy, conservées) ────────────────────
   window.addAdmin = async function() {
     const input = document.getElementById("admin-new-email");
     const email = input.value.trim().toLowerCase();
-    
-    if (!email || !email.includes("@")) {
+
+    if (!validateEmail(email)) {
       showToast("Email invalide.", "error");
       return;
     }
-    
     if (adminEmails.includes(email)) {
-      showToast("Cet email est déjà administrateur.", "error");
+      showToast("Déjà administrateur.", "error");
       return;
     }
-    
     if (qualiteEmails.includes(email)) {
-      const confirmed = await showConfirm(
-        "Promouvoir en admin",
-        `${email} est déjà dans le service Qualité. Voulez-vous le promouvoir administrateur ?`
-      );
-      if (!confirmed) return;
-      
       qualiteEmails = qualiteEmails.filter(e => e !== email);
     }
-    
     adminEmails = [...adminEmails, email];
     await saveRoles();
-    await logRoleChange("add_admin", email);
-    
+    await logChange("add_admin", email);
     input.value = "";
     showToast(`${email} promu administrateur.`, "success");
     renderAdmin();
@@ -542,66 +853,47 @@
 
   window.removeAdmin = async function(idx) {
     const email = adminEmails[idx];
-    
     if (adminEmails.length === 1) {
       showToast("Impossible de retirer le dernier administrateur.", "error");
       return;
     }
-    
+    if (email === INITIAL_ADMIN) {
+      showToast("L'admin initial ne peut pas être retiré.", "error");
+      return;
+    }
     const confirmed = await showConfirm(
-      "Retirer les droits admin",
-      `Voulez-vous vraiment retirer les droits administrateur de ${email} ?`
+      "Retirer les droits",
+      `Retirer les droits admin de ${email} ?`,
+      "Retirer", "Annuler"
     );
     if (!confirmed) return;
-    
+
     adminEmails = adminEmails.filter((_, i) => i !== idx);
     await saveRoles();
-    await logRoleChange("remove_admin", email);
-    
+    await logChange("remove_admin", email);
     showToast(`${email} n'est plus administrateur.`, "success");
     renderAdmin();
   };
 
-  window.promoteToAdmin = async function(email) {
-    const confirmed = await showConfirm(
-      "Promouvoir en admin",
-      `Voulez-vous promouvoir ${email} au rang d'administrateur ?`
-    );
-    if (!confirmed) return;
-    
-    qualiteEmails = qualiteEmails.filter(e => e !== email);
-    adminEmails = [...adminEmails, email];
-    await saveRoles();
-    await logRoleChange("promote_admin", email);
-    
-    showToast(`${email} promu administrateur.`, "success");
-    renderAdmin();
-  };
-
-  // ── Gestion des Qualité ─────────────────────────────────────────────────
   window.addQualite = async function() {
     const input = document.getElementById("qualite-new-email");
     const email = input.value.trim().toLowerCase();
-    
-    if (!email || !email.includes("@")) {
+
+    if (!validateEmail(email)) {
       showToast("Email invalide.", "error");
       return;
     }
-    
     if (qualiteEmails.includes(email)) {
-      showToast("Cet email est déjà dans le service Qualité.", "error");
+      showToast("Déjà dans le service Qualité.", "error");
       return;
     }
-    
     if (adminEmails.includes(email)) {
-      showToast("Cet email est déjà administrateur.", "error");
+      showToast("Déjà administrateur.", "error");
       return;
     }
-    
     qualiteEmails = [...qualiteEmails, email];
     await saveRoles();
-    await logRoleChange("add_qualite", email);
-    
+    await logChange("add_qualite", email);
     input.value = "";
     showToast(`${email} ajouté au service Qualité.`, "success");
     renderAdmin();
@@ -609,149 +901,179 @@
 
   window.removeQualite = async function(idx) {
     const email = qualiteEmails[idx];
-    
     const confirmed = await showConfirm(
-      "Retirer du service Qualité",
-      `Voulez-vous vraiment retirer ${email} du service Qualité ?`
+      "Retirer du service",
+      `Retirer ${email} du service Qualité ?`,
+      "Retirer", "Annuler"
     );
     if (!confirmed) return;
-    
+
     qualiteEmails = qualiteEmails.filter((_, i) => i !== idx);
     await saveRoles();
-    await logRoleChange("remove_qualite", email);
-    
+    await logChange("remove_qualite", email);
     showToast(`${email} retiré du service Qualité.`, "success");
     renderAdmin();
   };
 
-  window.promoteToQualite = async function(email) {
-    const confirmed = await showConfirm(
-      "Rétrograder en Qualité",
-      `Voulez-vous retirer les droits admin de ${email} et le mettre dans le service Qualité ?`
-    );
-    if (!confirmed) return;
-    
-    adminEmails = adminEmails.filter(e => e !== email);
-    qualiteEmails = [...qualiteEmails, email];
-    await saveRoles();
-    await logRoleChange("promote_qualite", email);
-    
-    showToast(`${email} déplacé vers le service Qualité.`, "success");
-    renderAdmin();
-  };
-
-  // ── 📥 Export CSV ───────────────────────────────────────────────────────
+  // ── Export CSV ─────────────────────────────────────────────────────
   window.exportCSV = function() {
     if (!allDemandes.length) {
       showToast("Aucune donnée à exporter.", "error");
       return;
     }
-    
-    const headers = ["Symbole", "Demandeur", "Catégorie", "Raison", "Statut", "Priorité", "Date", "Réponse"];
+
+    const headers = ["Symbole", "Demandeur", "Email", "Catégorie", "Raison", "Statut", "Priorité", "Date", "Réponse", "Répondant"];
     const rows = allDemandes.map(d => [
-      d.symbole,
-      d.demandeur,
+      d.symbole || "",
+      d.demandeur || "",
+      d.demandeurEmail || "",
       d.categorie || "-",
-      d.raison.replace(/"/g, '""'),
-      d.statut,
+      (d.raison || "").replace(/"/g, '""'),
+      d.statut || "",
       d.priorite || "-",
       fmt(d.dateDemande),
-      (d.reponse || "").replace(/"/g, '""')
+      (d.reponse || "").replace(/"/g, '""'),
+      d.repondantEmail || ""
     ]);
-    
+
     const csv = [headers, ...rows]
       .map(row => row.map(cell => `"${cell}"`).join(","))
       .join("\n");
-    
+
     const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = `demandes_${new Date().toISOString().split("T")[0]}.csv`;
     link.click();
-    
     showToast("Export CSV téléchargé !", "success");
   };
 
-  // ── 🔐 Auth ─────────────────────────────────────────────────────────────
+  window.exportLogs = async function() {
+    try {
+      const snap = await getDocs(query(logsRef, orderBy("timestamp", "desc")));
+      const logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      if (!logs.length) {
+        showToast("Aucun log à exporter.", "error");
+        return;
+      }
+
+      const headers = ["Date", "Utilisateur", "Rôle", "Action", "Cible", "Détails"];
+      const rows = logs.map(l => [
+        fmt(l.timestamp),
+        l.userEmail || "",
+        l.userRole || "",
+        l.action || "",
+        l.targetEmail || "",
+        (l.details || "").replace(/"/g, '""')
+      ]);
+
+      const csv = [headers, ...rows]
+        .map(row => row.map(cell => `"${cell}"`).join(","))
+        .join("\n");
+
+      const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `logs_${new Date().toISOString().split("T")[0]}.csv`;
+      link.click();
+      showToast("Logs exportés !", "success");
+    } catch (e) {
+      showToast("Erreur : " + e.message, "error");
+    }
+  };
+
+  // ── Auth ───────────────────────────────────────────────────────────
   window.doLogin = async function() {
     const email = document.getElementById("login-email").value.trim();
     const pass = document.getElementById("login-pass").value;
-    
-    if (!email || !pass) {
-      showToast("Veuillez remplir tous les champs.", "error");
+
+    if (!validateEmail(email)) {
+      showToast("Email invalide.", "error");
       return;
     }
-    
+    if (!pass || pass.length < 6) {
+      showToast("Mot de passe invalide (min 6 caractères).", "error");
+      return;
+    }
+
+    const btn = document.querySelector("#screen-login .btn-primary");
+    btn.disabled = true;
+    btn.textContent = "⏳ Connexion…";
+
     try {
       await signInWithEmailAndPassword(auth, email, pass);
     } catch (e) {
-      showToast("Identifiants incorrects.", "error");
+      showToast("Identifiants incorrects : " + e.message, "error");
     }
+    btn.disabled = false;
+    btn.textContent = "Se connecter";
   };
 
   window.doLogout = async function() {
     if (formModified) {
       const confirmed = await showConfirm(
         "Formulaire non sauvegardé",
-        "Vous avez des modifications non envoyées. Voulez-vous vraiment vous déconnecter ?"
+        "Vous avez des modifications non envoyées. Voulez-vous vraiment vous déconnecter ?",
+        "Déconnecter", "Rester"
       );
       if (!confirmed) return;
     }
-    
+
     if (unsubDemandes) unsubDemandes();
     await signOut(auth);
     showToast("Déconnexion réussie", "success");
   };
 
-  // ── ⌨️ Raccourcis clavier ───────────────────────────────────────────────
+  // ── Raccourcis ────────────────────────────────────────────────────
   document.addEventListener("keydown", (e) => {
-    if (e.ctrlKey || e.metaKey) {
-      if (e.key === "k") {
-        e.preventDefault();
-        document.getElementById("search-input")?.focus();
-      }
-      if (e.key === "Enter" && activeTab === "demandes" && !isQualite) {
-        e.preventDefault();
-        submitDemande();
-      }
+    if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      e.preventDefault();
+      document.getElementById("search-input")?.focus();
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && activeTab === "demandes" && userRole === "lecteur") {
+      e.preventDefault();
+      submitDemande();
     }
   });
 
-  // ── 🎯 Auth State ───────────────────────────────────────────────────────
+  // ── Auth State ────────────────────────────────────────────────────
   onAuthStateChanged(auth, async user => {
     currentUser = user;
     if (user) {
       await loadRoles();
-      isAdmin = adminEmails.includes(user.email);
-      isQualite = isAdmin || qualiteEmails.includes(user.email);
+      userRole = getRoleForEmail(user.email);
+      await registerUserInDB(user);
+      await loadUsers();
+      await logChange("login", user.email, `Rôle: ${userRole}`);
 
       document.getElementById("screen-login").style.display = "none";
       document.getElementById("screen-app").style.display = "flex";
       document.getElementById("user-email").textContent = user.email;
-      document.getElementById("user-role").textContent =
-        isAdmin ? "Administrateur" : isQualite ? "Service Qualité" : "Demandeur";
+      document.getElementById("user-role").textContent = getRoleLabel(userRole);
 
-      document.getElementById("tab-admin").style.display = isAdmin ? "inline-flex" : "none";
-      document.getElementById("form-section").style.display = (isQualite || isAdmin) ? "none" : "block";
-      document.getElementById("btn-export").style.display = (isQualite || isAdmin) ? "inline-flex" : "none";
+      // Visibilité selon rôle
+      document.getElementById("tab-admin").style.display = userRole === "admin" ? "inline-flex" : "none";
+      document.getElementById("form-section").style.display = (userRole === "lecteur") ? "block" : "none";
+      document.getElementById("btn-export").style.display = (userRole === "admin" || userRole === "qualite") ? "inline-flex" : "none";
 
       switchTab("demandes");
       startListen();
-      
-      showToast(`Bienvenue ${user.email} !`, "success");
+
+      showToast(`Bienvenue ${user.email} ! (${getRoleLabel(userRole)})`, "success");
     } else {
       document.getElementById("screen-login").style.display = "flex";
       document.getElementById("screen-app").style.display = "none";
       allDemandes = [];
+      allUsers = [];
     }
   });
 
-  // ── 📝 Suivi modifications formulaire ───────────────────────────────────
+  // ── Suivi formulaire ─────────────────────────────────────────────
   ["f-symbole", "f-raison", "f-demandeur"].forEach(id => {
     document.getElementById(id).addEventListener("input", () => formModified = true);
   });
 
-  // ── ⚠️ Confirmation avant fermeture ─────────────────────────────────────
   window.addEventListener("beforeunload", (e) => {
     if (formModified) {
       e.preventDefault();
@@ -761,7 +1083,7 @@
 </script>
 
 <style>
-/* ── Variables CSS ─────────────────────────────────────────────────────── */
+/* ═══ Variables ═══ */
 :root {
   --navy: #1A2F4E;
   --navy2: #243d63;
@@ -796,11 +1118,7 @@
   --shadow-hover: 0 4px 16px rgba(0,0,0,.4);
 }
 
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
   font-family: var(--font);
@@ -810,7 +1128,7 @@ body {
   transition: background 0.3s ease;
 }
 
-/* ── Toast Notifications ───────────────────────────────────────────────── */
+/* ═══ Toast ═══ */
 #toast-container {
   position: fixed;
   top: 20px;
@@ -837,34 +1155,18 @@ body {
 
 .toast.show { transform: translateX(0); }
 
-.toast-content {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-}
-
-.toast-icon {
-  font-size: 18px;
-  font-weight: bold;
-}
-
-.toast-message {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text);
-}
+.toast-content { display: flex; align-items: center; gap: 10px; flex: 1; }
+.toast-icon { font-size: 18px; font-weight: bold; }
+.toast-message { font-size: 14px; font-weight: 500; color: var(--text); word-break: break-word; }
 
 .toast-success { border-left: 4px solid var(--green); }
 .toast-success .toast-icon { color: var(--green); }
-
 .toast-error { border-left: 4px solid var(--red); }
 .toast-error .toast-icon { color: var(--red); }
-
 .toast-info { border-left: 4px solid var(--blue); }
 .toast-info .toast-icon { color: var(--blue); }
 
-/* ── Modal Confirmation ────────────────────────────────────────────────── */
+/* ═══ Modal ═══ */
 #confirm-modal {
   position: fixed;
   inset: 0;
@@ -878,10 +1180,7 @@ body {
   transition: opacity 0.2s;
 }
 
-#confirm-modal.show {
-  display: flex;
-  opacity: 1;
-}
+#confirm-modal.show { display: flex; opacity: 1; }
 
 .modal-content {
   background: var(--bg-card);
@@ -892,25 +1191,10 @@ body {
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
 }
 
-.modal-content h3 {
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 12px;
-  color: var(--text);
-}
+.modal-content h3 { font-size: 18px; font-weight: 700; margin-bottom: 12px; color: var(--text); }
+.modal-content p { font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 24px; }
 
-.modal-content p {
-  font-size: 14px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin-bottom: 24px;
-}
-
-.modal-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
-}
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; }
 
 .btn-modal {
   padding: 10px 20px;
@@ -923,25 +1207,12 @@ body {
   transition: var(--transition);
 }
 
-.btn-modal-cancel {
-  background: var(--border);
-  color: var(--text);
-}
+.btn-modal-cancel { background: var(--border); color: var(--text); }
+.btn-modal-cancel:hover { background: #c5ccd6; }
+.btn-modal-confirm { background: var(--red); color: var(--white); }
+.btn-modal-confirm:hover { background: #a0281f; }
 
-.btn-modal-cancel:hover {
-  background: #c5ccd6;
-}
-
-.btn-modal-confirm {
-  background: var(--red);
-  color: var(--white);
-}
-
-.btn-modal-confirm:hover {
-  background: #a0281f;
-}
-
-/* ── LOGIN ─────────────────────────────────────────────────────────────── */
+/* ═══ LOGIN ═══ */
 #screen-login {
   display: flex;
   align-items: center;
@@ -962,47 +1233,22 @@ body {
 }
 
 @keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(30px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.login-logo {
-  text-align: center;
-  margin-bottom: 32px;
-}
-
-.login-logo .icon {
-  font-size: 48px;
-  animation: float 3s ease-in-out infinite;
-}
+.login-logo { text-align: center; margin-bottom: 32px; }
+.login-logo .icon { font-size: 48px; animation: float 3s ease-in-out infinite; }
 
 @keyframes float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-10px); }
 }
 
-.login-logo h1 {
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--navy);
-  margin-top: 12px;
-}
+.login-logo h1 { font-size: 20px; font-weight: 800; color: var(--navy); margin-top: 12px; }
+.login-logo p { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
 
-.login-logo p {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-top: 4px;
-}
-
-.field {
-  margin-bottom: 20px;
-}
+.field { margin-bottom: 20px; }
 
 .field label {
   display: block;
@@ -1014,9 +1260,7 @@ body {
   margin-bottom: 8px;
 }
 
-.field input,
-.field textarea,
-.field select {
+.field input, .field textarea, .field select {
   width: 100%;
   padding: 12px 14px;
   border: 1.5px solid var(--border);
@@ -1028,9 +1272,7 @@ body {
   transition: var(--transition);
 }
 
-.field input:focus,
-.field textarea:focus,
-.field select:focus {
+.field input:focus, .field textarea:focus, .field select:focus {
   outline: none;
   border-color: var(--orange);
   box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
@@ -1058,21 +1300,11 @@ body {
   box-shadow: 0 4px 12px rgba(224, 90, 0, 0.3);
 }
 
-.btn-primary:active {
-  transform: translateY(0);
-}
+.btn-primary:active { transform: translateY(0); }
+.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* ── APP ───────────────────────────────────────────────────────────────── */
-#screen-app {
-  display: none;
-  flex-direction: column;
-  min-height: 100vh;
-}
+/* ═══ APP ═══ */
+#screen-app { display: none; flex-direction: column; min-height: 100vh; }
 
 .topbar {
   background: var(--navy);
@@ -1088,28 +1320,11 @@ body {
   box-shadow: 0 2px 12px rgba(0,0,0,.15);
 }
 
-.topbar-left {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex: 1;
-}
+.topbar-left { display: flex; align-items: center; gap: 16px; flex: 1; }
+.topbar-left .ticon { font-size: 24px; }
+.topbar-left h2 { font-size: 16px; font-weight: 700; white-space: nowrap; }
 
-.topbar-left .ticon {
-  font-size: 24px;
-}
-
-.topbar-left h2 {
-  font-size: 16px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.tabs {
-  display: flex;
-  gap: 6px;
-  margin-left: 24px;
-}
+.tabs { display: flex; gap: 6px; margin-left: 24px; }
 
 .tab-btn {
   background: rgba(255,255,255,.1);
@@ -1128,22 +1343,10 @@ body {
   white-space: nowrap;
 }
 
-.tab-btn:hover:not(.active) {
-  background: rgba(255,255,255,.18);
-  color: #fff;
-}
+.tab-btn:hover:not(.active) { background: rgba(255,255,255,.18); color: #fff; }
+.tab-btn.active { background: var(--orange); color: #fff; box-shadow: 0 2px 8px rgba(224, 90, 0, 0.4); }
 
-.tab-btn.active {
-  background: var(--orange);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(224, 90, 0, 0.4);
-}
-
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+.topbar-right { display: flex; align-items: center; gap: 12px; }
 
 .theme-toggle {
   background: rgba(255,255,255,.1);
@@ -1160,10 +1363,7 @@ body {
   transition: var(--transition);
 }
 
-.theme-toggle:hover {
-  background: rgba(255,255,255,.2);
-  transform: rotate(20deg);
-}
+.theme-toggle:hover { background: rgba(255,255,255,.2); transform: rotate(20deg); }
 
 .user-pill {
   background: rgba(255,255,255,.12);
@@ -1175,10 +1375,7 @@ body {
   gap: 8px;
 }
 
-.user-pill strong {
-  color: #fff;
-  font-weight: 600;
-}
+.user-pill strong { color: #fff; font-weight: 600; }
 
 .user-pill .role {
   color: #aac4ff;
@@ -1201,27 +1398,20 @@ body {
   transition: var(--transition);
 }
 
-.btn-logout:hover {
-  background: rgba(255,255,255,.25);
-}
+.btn-logout:hover { background: rgba(255,255,255,.25); }
 
-/* ── Panels ────────────────────────────────────────────────────────────── */
-#panel-demandes {
-  display: flex;
-  flex: 1;
-  gap: 0;
-}
+/* ═══ Panels ═══ */
+#panel-demandes { display: flex; flex: 1; gap: 0; }
 
 #panel-admin {
   display: none;
   flex: 1;
   padding: 40px 24px;
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   width: 100%;
 }
 
-/* ── Sidebar form ──────────────────────────────────────────────────────── */
 #form-section {
   width: 340px;
   min-width: 340px;
@@ -1246,12 +1436,9 @@ body {
   gap: 8px;
 }
 
-#form-section .field textarea {
-  resize: vertical;
-  min-height: 100px;
-}
+#form-section .field textarea { resize: vertical; min-height: 100px; }
 
-/* ── Stats Bar ─────────────────────────────────────────────────────────── */
+/* ═══ Stats Bar ═══ */
 .stats-bar {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1269,53 +1456,19 @@ body {
   transition: var(--transition);
 }
 
-.stat-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow);
-}
-
-.stat-number {
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--text);
-  display: block;
-}
-
-.stat-label {
-  font-size: 11px;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-top: 4px;
-  display: block;
-}
-
+.stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.stat-number { font-size: 24px; font-weight: 800; color: var(--text); display: block; }
+.stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; display: block; }
 .stat-nouveau .stat-number { color: var(--orange); }
 .stat-encours .stat-number { color: var(--blue); }
 .stat-resolu .stat-number { color: var(--green); }
 
-/* ── List panel ────────────────────────────────────────────────────────── */
-.list-panel {
-  flex: 1;
-  padding: 24px;
-  overflow-y: auto;
-  height: calc(100vh - 60px);
-  background: var(--bg);
-}
+/* ═══ List ═══ */
+.list-panel { flex: 1; padding: 24px; overflow-y: auto; height: calc(100vh - 60px); background: var(--bg); }
 
-.list-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
+.list-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 
-.search-box {
-  flex: 1;
-  min-width: 200px;
-  position: relative;
-}
+.search-box { flex: 1; min-width: 200px; position: relative; }
 
 .search-box input {
   width: 100%;
@@ -1329,25 +1482,11 @@ body {
   transition: var(--transition);
 }
 
-.search-box input:focus {
-  outline: none;
-  border-color: var(--orange);
-  box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
-}
+.search-box input:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1); }
 
-.search-box::before {
-  content: "🔍";
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 16px;
-}
+.search-box::before { content: "🔍"; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 16px; }
 
-.filter-group {
-  display: flex;
-  gap: 6px;
-}
+.filter-group { display: flex; gap: 6px; }
 
 .filter-btn {
   background: var(--bg-card);
@@ -1363,16 +1502,8 @@ body {
   white-space: nowrap;
 }
 
-.filter-btn:hover {
-  background: var(--bg);
-  border-color: var(--orange);
-}
-
-.filter-btn.active {
-  background: var(--orange);
-  color: var(--white);
-  border-color: var(--orange);
-}
+.filter-btn:hover { background: var(--bg); border-color: var(--orange); }
+.filter-btn.active { background: var(--orange); color: var(--white); border-color: var(--orange); }
 
 .btn-export {
   background: var(--green);
@@ -1390,17 +1521,9 @@ body {
   gap: 6px;
 }
 
-.btn-export:hover {
-  background: var(--green-hover);
-  transform: translateY(-1px);
-}
+.btn-export:hover { background: var(--green-hover); transform: translateY(-1px); }
 
-/* ── Cards ─────────────────────────────────────────────────────────────── */
-#list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+#list { display: flex; flex-direction: column; gap: 16px; }
 
 .card {
   background: var(--bg-card);
@@ -1413,27 +1536,13 @@ body {
 }
 
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.card:hover {
-  box-shadow: var(--shadow-hover);
-  transform: translateY(-2px);
-}
+.card:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
 
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 14px;
-}
+.card-header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 
 .symbol-badge {
   background: var(--navy);
@@ -1446,28 +1555,12 @@ body {
   letter-spacing: 0.5px;
 }
 
-.card-meta {
-  flex: 1;
-}
+.card-meta { flex: 1; }
+.meta-who { display: block; font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.meta-date { font-size: 12px; color: var(--text-secondary); }
+.meta-email { display: block; font-size: 11px; color: var(--text-secondary); margin-top: 2px; font-style: italic; }
 
-.meta-who {
-  display: block;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-
-.meta-date {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.card-badges {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
+.card-badges { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .badge {
   border-radius: 20px;
@@ -1480,21 +1573,9 @@ body {
   gap: 4px;
 }
 
-.badge-new {
-  background: #FFF3E0;
-  color: #E65100;
-  animation: pulse-new 2s infinite;
-}
-
-.badge-wip {
-  background: var(--blue-light);
-  color: var(--blue);
-}
-
-.badge-done {
-  background: #E8F5E9;
-  color: var(--green);
-}
+.badge-new { background: #FFF3E0; color: #E65100; animation: pulse-new 2s infinite; }
+.badge-wip { background: var(--blue-light); color: var(--blue); }
+.badge-done { background: #E8F5E9; color: var(--green); }
 
 @keyframes pulse-new {
   0%, 100% { box-shadow: 0 0 0 0 rgba(224, 90, 0, 0.4); }
@@ -1512,23 +1593,23 @@ body {
   gap: 4px;
 }
 
-.priority-high {
-  background: #FFEBEE;
-  color: #C62828;
+.priority-high { background: #FFEBEE; color: #C62828; }
+.priority-med { background: #FFF9C4; color: #F57F17; }
+.priority-low { background: #E8F5E9; color: #2E7D32; }
+
+.card-category { margin-bottom: 10px; }
+
+.cat-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: 6px;
+  display: inline-block;
 }
 
-.priority-med {
-  background: #FFF9C4;
-  color: #F57F17;
-}
-
-.priority-low {
-  background: #E8F5E9;
-  color: #2E7D32;
-}
-
-.label-reason,
-.label-reply {
+.label-reason, .label-reply {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -1538,11 +1619,7 @@ body {
   margin-bottom: 6px;
 }
 
-.card-reason p {
-  font-size: 14px;
-  color: var(--text);
-  line-height: 1.6;
-}
+.card-reason p { font-size: 14px; color: var(--text); line-height: 1.6; }
 
 .card-reply {
   margin-top: 14px;
@@ -1552,22 +1629,9 @@ body {
   border-left: 4px solid var(--green);
 }
 
-.label-reply {
-  color: var(--green);
-}
-
-.card-reply p {
-  font-size: 14px;
-  color: #1a3d2b;
-  line-height: 1.6;
-}
-
-.reply-date {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 6px;
-  display: block;
-}
+.label-reply { color: var(--green); }
+.card-reply p { font-size: 14px; color: #1a3d2b; line-height: 1.6; }
+.reply-date { font-size: 12px; color: var(--text-secondary); margin-top: 6px; display: block; }
 
 .card-actions {
   margin-top: 16px;
@@ -1578,14 +1642,9 @@ body {
   gap: 10px;
 }
 
-.action-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
+.action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
-.select-status,
-.select-priority {
+.select-status, .select-priority {
   padding: 9px 12px;
   border: 1.5px solid var(--border);
   border-radius: 8px;
@@ -1597,11 +1656,7 @@ body {
   transition: var(--transition);
 }
 
-.select-status:focus,
-.select-priority:focus {
-  outline: none;
-  border-color: var(--green);
-}
+.select-status:focus, .select-priority:focus { outline: none; border-color: var(--green); }
 
 .reply-input {
   width: 100%;
@@ -1617,17 +1672,9 @@ body {
   transition: var(--transition);
 }
 
-.reply-input:focus {
-  outline: none;
-  border-color: var(--green);
-  box-shadow: 0 0 0 3px rgba(46, 125, 82, 0.1);
-}
+.reply-input:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(46, 125, 82, 0.1); }
 
-.action-buttons {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-}
+.action-buttons { display: flex; gap: 10px; justify-content: flex-end; }
 
 .btn-reply {
   padding: 10px 20px;
@@ -1642,15 +1689,8 @@ body {
   transition: var(--transition);
 }
 
-.btn-reply:hover:not(:disabled) {
-  background: var(--green-hover);
-  transform: translateY(-1px);
-}
-
-.btn-reply:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+.btn-reply:hover:not(:disabled) { background: var(--green-hover); transform: translateY(-1px); }
+.btn-reply:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .btn-delete {
   padding: 10px 16px;
@@ -1663,25 +1703,95 @@ body {
   transition: var(--transition);
 }
 
-.btn-delete:hover {
-  background: #f5c6c6;
-  transform: scale(1.05);
+.btn-delete:hover { background: #f5c6c6; transform: scale(1.05); }
+
+.empty { text-align: center; color: var(--text-secondary); padding: 80px 20px; font-size: 15px; }
+.empty-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.5; }
+
+/* ═══ Pagination ═══ */
+#pagination {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
 }
 
-.empty {
-  text-align: center;
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.pagination-controls button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.pagination-controls button:hover:not(:disabled) {
+  background: var(--orange);
+  color: var(--white);
+  border-color: var(--orange);
+}
+
+.pagination-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pagination-controls button.active {
+  background: var(--orange);
+  color: var(--white);
+  border-color: var(--orange);
+}
+
+.pagination-controls .ellipsis {
+  padding: 0 8px;
   color: var(--text-secondary);
-  padding: 80px 20px;
-  font-size: 15px;
 }
 
-.empty-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-  opacity: 0.5;
+.pagination-info {
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
-/* ── ADMIN PANEL ───────────────────────────────────────────────────────── */
+/* ═══ ADMIN ═══ */
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.admin-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+.admin-stat-number { font-size: 32px; font-weight: 800; display: block; }
+.admin-stat-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; display: block; }
+
+.admin-stat-admins .admin-stat-number { color: var(--orange); }
+.admin-stat-qualite .admin-stat-number { color: var(--blue); }
+.admin-stat-lecteurs .admin-stat-number { color: var(--text-secondary); }
+.admin-stat-users .admin-stat-number { color: var(--navy); }
+.admin-stat-demandes .admin-stat-number { color: var(--green); }
+
 .admin-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1697,60 +1807,10 @@ body {
   box-shadow: var(--shadow);
 }
 
-.admin-card h3 {
-  font-size: 17px;
-  font-weight: 800;
-  color: var(--text);
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+.admin-card h3 { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+.admin-card .admin-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 20px; line-height: 1.6; }
 
-.admin-card .admin-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 20px;
-  line-height: 1.6;
-}
-
-.admin-stats {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.admin-stat {
-  background: var(--bg);
-  border-radius: 10px;
-  padding: 16px;
-  text-align: center;
-}
-
-.admin-stat-number {
-  font-size: 28px;
-  font-weight: 800;
-  display: block;
-}
-
-.admin-stat-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-top: 4px;
-  display: block;
-}
-
-.admin-stat-admins .admin-stat-number { color: var(--orange); }
-.admin-stat-qualite .admin-stat-number { color: var(--blue); }
-
-.admin-add-row {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
-}
+.admin-add-row { display: flex; gap: 10px; margin-bottom: 16px; }
 
 .admin-add-row input {
   flex: 1;
@@ -1764,11 +1824,7 @@ body {
   transition: var(--transition);
 }
 
-.admin-add-row input:focus {
-  outline: none;
-  border-color: var(--orange);
-  box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
-}
+.admin-add-row input:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1); }
 
 .btn-add {
   padding: 11px 18px;
@@ -1784,23 +1840,15 @@ body {
   transition: var(--transition);
 }
 
-.btn-add:hover {
-  background: var(--orange-hover);
-  transform: translateY(-1px);
-}
+.btn-add:hover { background: var(--orange-hover); transform: translateY(-1px); }
 
-.admin-divider {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 16px 0;
-}
+.admin-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
-#admin-list,
-#qualite-list {
+#admin-list, #qualite-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 400px;
+  max-height: 300px;
   overflow-y: auto;
 }
 
@@ -1814,19 +1862,12 @@ body {
   padding: 11px 14px;
   transition: var(--transition);
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.admin-email-row:hover {
-  background: var(--border);
-}
+.admin-email-row:hover { background: var(--border); }
 
-.admin-email-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-}
+.admin-email-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 
 .admin-email-text {
   font-size: 13px;
@@ -1847,21 +1888,11 @@ body {
   white-space: nowrap;
 }
 
-.admin-self {
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-style: italic;
-}
+.admin-self { font-size: 11px; color: var(--text-secondary); font-style: italic; }
 
-.admin-email-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
+.admin-email-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
-.btn-promote {
-  background: var(--blue-light);
-  color: var(--blue);
+.btn-role {
   border: none;
   border-radius: 7px;
   padding: 6px 11px;
@@ -1873,10 +1904,14 @@ body {
   white-space: nowrap;
 }
 
-.btn-promote:hover {
-  background: #c8e0ff;
-  transform: scale(1.05);
-}
+.btn-role:hover { transform: scale(1.05); }
+
+.btn-role-admin { background: #FFF3E0; color: var(--orange); }
+.btn-role-admin:hover { background: #FFE0B2; }
+.btn-role-qualite { background: var(--blue-light); color: var(--blue); }
+.btn-role-qualite:hover { background: #c8e0ff; }
+.btn-role-lecteur { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-role-lecteur:hover { background: var(--border); }
 
 .btn-remove {
   background: var(--red-light);
@@ -1892,19 +1927,200 @@ body {
   white-space: nowrap;
 }
 
-.btn-remove:hover {
-  background: #f5c6c6;
-  transform: scale(1.05);
+.btn-remove:hover { background: #f5c6c6; transform: scale(1.05); }
+
+.admin-empty { font-size: 13px; color: var(--text-secondary); text-align: center; padding: 30px 20px; }
+
+/* ═══ Gestion Utilisateurs ═══ */
+.users-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  box-shadow: var(--shadow);
+  margin-bottom: 32px;
 }
 
-.admin-empty {
-  font-size: 13px;
+.users-card h3 {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.users-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.users-search {
+  flex: 1;
+  min-width: 200px;
+  position: relative;
+}
+
+.users-search input {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-card);
+  transition: var(--transition);
+}
+
+.users-search input:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 3px rgba(224, 90, 0, 0.1);
+}
+
+.users-search::before {
+  content: "🔍";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 16px;
+}
+
+.user-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.user-filter-btn {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
   color: var(--text-secondary);
-  text-align: center;
-  padding: 30px 20px;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
 }
 
-/* ── Logs ──────────────────────────────────────────────────────────────── */
+.user-filter-btn:hover { border-color: var(--orange); }
+.user-filter-btn.active { background: var(--orange); color: var(--white); border-color: var(--orange); }
+
+#users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  transition: var(--transition);
+  flex-wrap: wrap;
+}
+
+.user-row:hover { background: var(--border); box-shadow: var(--shadow); }
+
+.user-info { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+
+.user-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--orange) 0%, var(--navy) 100%);
+  color: var(--white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.user-details { flex: 1; min-width: 0; }
+
+.user-email {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.user-role-info { flex-shrink: 0; }
+
+.role-badge {
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.role-admin { background: #FFF3E0; color: var(--orange); }
+.role-qualite { background: var(--blue-light); color: var(--blue); }
+.role-lecteur { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
+
+.user-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+.user-role-select {
+  padding: 7px 10px;
+  border: 1.5px solid var(--border);
+  border-radius: 7px;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.user-role-select:focus { outline: none; border-color: var(--orange); }
+
+.btn-user-action {
+  border: none;
+  border-radius: 7px;
+  padding: 7px 11px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-user-action:hover { transform: scale(1.1); }
+
+.btn-user-delete {
+  background: var(--red-light);
+  color: var(--red);
+}
+
+.btn-user-delete:hover { background: #f5c6c6; }
+
+/* ═══ Logs ═══ */
 .logs-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1921,7 +2137,25 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  justify-content: space-between;
 }
+
+.logs-header-actions { display: flex; gap: 8px; }
+
+.btn-logs-export {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-logs-export:hover { background: var(--border); }
 
 #admin-logs {
   display: flex;
@@ -1939,54 +2173,24 @@ body {
   transition: var(--transition);
 }
 
-.log-entry:hover {
-  background: var(--border);
+.log-entry:hover { background: var(--border); }
+
+.log-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.log-icon { font-size: 16px; }
+.log-action { font-size: 13px; font-weight: 700; color: var(--text); }
+.log-target { font-size: 13px; color: var(--text-secondary); font-weight: 600; }
+
+.log-meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-secondary); flex-wrap: wrap; }
+.log-details { margin-top: 6px; font-size: 12px; color: var(--text-secondary); font-style: italic; }
+
+/* ═══ Responsive ═══ */
+@media (max-width: 1200px) {
+  .admin-stats { grid-template-columns: repeat(3, 1fr); }
 }
 
-.log-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
-  flex-wrap: wrap;
-}
-
-.log-icon {
-  font-size: 16px;
-}
-
-.log-action {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.log-target {
-  font-size: 13px;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-.log-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.log-details {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-style: italic;
-}
-
-/* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  #panel-demandes {
-    flex-direction: column;
-  }
-  
+  #panel-demandes { flex-direction: column; }
+
   #form-section {
     width: 100%;
     min-width: unset;
@@ -1995,99 +2199,38 @@ body {
     position: static;
     height: auto;
   }
-  
-  .list-panel {
-    height: auto;
-  }
-  
-  .stats-bar {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  
-  .topbar-left h2 {
-    display: none;
-  }
-  
-  .tabs {
-    gap: 4px;
-  }
-  
-  .tab-btn {
-    padding: 6px 12px;
-    font-size: 12px;
-  }
-  
-  .admin-grid {
-    grid-template-columns: 1fr;
-  }
+
+  .list-panel { height: auto; }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); }
+  .topbar-left h2 { display: none; }
+  .tabs { gap: 4px; }
+  .tab-btn { padding: 6px 12px; font-size: 12px; }
+  .admin-grid { grid-template-columns: 1fr; }
+  .admin-stats { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 600px) {
-  .topbar {
-    padding: 0 16px;
-    height: 56px;
-  }
-  
-  .user-pill {
-    display: none;
-  }
-  
-  .list-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  
-  .search-box {
-    min-width: unset;
-  }
-  
-  .filter-group {
-    overflow-x: auto;
-    padding-bottom: 4px;
-  }
-  
-  .stats-bar {
-    grid-template-columns: 1fr 1fr;
-    padding: 12px 16px;
-    gap: 8px;
-  }
-  
-  .stat-card {
-    padding: 10px 12px;
-  }
-  
-  .stat-number {
-    font-size: 20px;
-  }
-  
-  .card {
-    padding: 16px 18px;
-  }
-  
-  .action-row {
-    grid-template-columns: 1fr;
-  }
-  
-  #panel-admin {
-    padding: 20px 16px;
-  }
-  
-  .admin-email-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-  }
-  
-  .admin-email-actions {
-    justify-content: flex-end;
-  }
+  .topbar { padding: 0 16px; height: 56px; }
+  .user-pill { display: none; }
+  .list-toolbar { flex-direction: column; align-items: stretch; }
+  .search-box { min-width: unset; }
+  .filter-group { overflow-x: auto; padding-bottom: 4px; }
+  .stats-bar { grid-template-columns: 1fr 1fr; padding: 12px 16px; gap: 8px; }
+  .stat-card { padding: 10px 12px; }
+  .stat-number { font-size: 20px; }
+  .card { padding: 16px 18px; }
+  .action-row { grid-template-columns: 1fr; }
+  #panel-admin { padding: 20px 16px; }
+  .admin-email-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .admin-email-actions { justify-content: flex-end; }
+  .admin-stats { grid-template-columns: 1fr 1fr; }
+  .user-row { flex-direction: column; align-items: stretch; gap: 12px; }
+  .user-actions { justify-content: flex-end; }
+  .users-toolbar { flex-direction: column; align-items: stretch; }
+  .users-search { min-width: unset; }
 }
 
-/* ── Accessibility ─────────────────────────────────────────────────────── */
-:focus-visible {
-  outline: 2px solid var(--orange);
-  outline-offset: 2px;
-}
+:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 
 .sr-only {
   position: absolute;
@@ -2104,10 +2247,8 @@ body {
 </head>
 <body>
 
-<!-- ═══ TOAST CONTAINER ═══════════════════════════════════════════════════ -->
 <div id="toast-container"></div>
 
-<!-- ═══ CONFIRM MODAL ════════════════════════════════════════════════════ -->
 <div id="confirm-modal">
   <div class="modal-content">
     <h3 id="confirm-title">Confirmer</h3>
@@ -2119,12 +2260,12 @@ body {
   </div>
 </div>
 
-<!-- ═══ LOGIN ═════════════════════════════════════════════════════════════ -->
+<!-- ═══ LOGIN ═══ -->
 <div id="screen-login">
   <div class="login-box">
     <div class="login-logo">
       <div class="icon">🔧</div>
-      <h1>Demandes Popups</h1>
+      <h1>Demandes Popups V2</h1>
       <p>Gestion des modifications · Service Qualité</p>
     </div>
     <div class="field">
@@ -2141,7 +2282,7 @@ body {
   </div>
 </div>
 
-<!-- ═══ APP ═══════════════════════════════════════════════════════════════ -->
+<!-- ═══ APP ═══ -->
 <div id="screen-app">
 
   <header class="topbar">
@@ -2152,8 +2293,7 @@ body {
         <button class="tab-btn active" data-tab="demandes" onclick="switchTab('demandes')">
           📋 Demandes
         </button>
-        <button class="tab-btn" id="tab-admin" data-tab="admin" onclick="switchTab('admin')"
-                style="display:none">
+        <button class="tab-btn" id="tab-admin" data-tab="admin" onclick="switchTab('admin')" style="display:none">
           ⚙️ Administration
         </button>
       </nav>
@@ -2226,34 +2366,29 @@ body {
                  oninput="searchDemandes(this.value)">
         </div>
         <div class="filter-group">
-          <button class="filter-btn active" data-filter="all" onclick="filterDemandes('all')">
-            Tous
-          </button>
-          <button class="filter-btn" data-filter="nouveau" onclick="filterDemandes('nouveau')">
-            Nouveaux
-          </button>
-          <button class="filter-btn" data-filter="en_cours" onclick="filterDemandes('en_cours')">
-            En cours
-          </button>
-          <button class="filter-btn" data-filter="resolu" onclick="filterDemandes('resolu')">
-            Résolus
-          </button>
+          <button class="filter-btn active" data-filter="all" onclick="filterDemandes('all')">Tous</button>
+          <button class="filter-btn" data-filter="nouveau" onclick="filterDemandes('nouveau')">Nouveaux</button>
+          <button class="filter-btn" data-filter="en_cours" onclick="filterDemandes('en_cours')">En cours</button>
+          <button class="filter-btn" data-filter="resolu" onclick="filterDemandes('resolu')">Résolus</button>
         </div>
-        <button class="btn-export" id="btn-export" onclick="exportCSV()">
-          📥 Exporter CSV
-        </button>
+        <button class="btn-export" id="btn-export" onclick="exportCSV()">📥 Exporter CSV</button>
       </div>
 
       <div id="list"></div>
+      <div id="pagination"></div>
     </main>
 
   </div>
 
   <!-- ── Onglet Administration ── -->
   <div id="panel-admin">
-    
-    <!-- Stats -->
+
+    <!-- Stats globales -->
     <div class="admin-stats">
+      <div class="admin-stat admin-stat-users">
+        <span class="admin-stat-number" id="stat-users-total">0</span>
+        <span class="admin-stat-label">Utilisateurs</span>
+      </div>
       <div class="admin-stat admin-stat-admins">
         <span class="admin-stat-number" id="stat-admins">0</span>
         <span class="admin-stat-label">Administrateurs</span>
@@ -2262,17 +2397,44 @@ body {
         <span class="admin-stat-number" id="stat-qualite">0</span>
         <span class="admin-stat-label">Service Qualité</span>
       </div>
+      <div class="admin-stat admin-stat-lecteurs">
+        <span class="admin-stat-number" id="stat-lecteurs">0</span>
+        <span class="admin-stat-label">Lecteurs</span>
+      </div>
+      <div class="admin-stat admin-stat-demandes">
+        <span class="admin-stat-number" id="stat-demandes-total">0</span>
+        <span class="admin-stat-label">Demandes</span>
+      </div>
     </div>
 
-    <!-- Grid de gestion -->
+    <!-- Gestion Utilisateurs -->
+    <div class="users-card">
+      <h3>
+        <span>👥 Gestion des Utilisateurs</span>
+      </h3>
+
+      <div class="users-toolbar">
+        <div class="users-search">
+          <input type="text" placeholder="Rechercher un utilisateur..." oninput="searchUsers(this.value)">
+        </div>
+        <div class="user-filter-group">
+          <button class="user-filter-btn active" data-role="all" onclick="filterUsers('all')">Tous</button>
+          <button class="user-filter-btn" data-role="admin" onclick="filterUsers('admin')">👑 Admin</button>
+          <button class="user-filter-btn" data-role="qualite" onclick="filterUsers('qualite')">📧 Qualité</button>
+          <button class="user-filter-btn" data-role="lecteur" onclick="filterUsers('lecteur')">👁 Lecteur</button>
+        </div>
+      </div>
+
+      <div id="users-list"></div>
+    </div>
+
+    <!-- Grid de gestion rapide -->
     <div class="admin-grid">
-      
+
       <!-- Gestion Admins -->
       <div class="admin-card">
         <h3>👑 Administrateurs</h3>
-        <p class="admin-desc">
-          Les administrateurs peuvent gérer les rôles et accéder à toutes les fonctionnalités.
-        </p>
+        <p class="admin-desc">Les administrateurs peuvent gérer les rôles et accéder à toutes les fonctionnalités.</p>
 
         <div class="admin-add-row">
           <input type="email" id="admin-new-email" placeholder="email@domaine.fr"
@@ -2287,9 +2449,7 @@ body {
       <!-- Gestion Qualité -->
       <div class="admin-card">
         <h3>📧 Service Qualité</h3>
-        <p class="admin-desc">
-          Les membres du service Qualité peuvent voir et répondre à toutes les demandes.
-        </p>
+        <p class="admin-desc">Les membres du service Qualité peuvent voir et répondre à toutes les demandes.</p>
 
         <div class="admin-add-row">
           <input type="email" id="qualite-new-email" placeholder="email@domaine.fr"
@@ -2304,7 +2464,12 @@ body {
 
     <!-- Logs -->
     <div class="logs-card">
-      <h3>📊 Historique des modifications</h3>
+      <h3>
+        <span>📊 Historique des modifications</span>
+        <div class="logs-header-actions">
+          <button class="btn-logs-export" onclick="exportLogs()">📥 Exporter</button>
+        </div>
+      </h3>
       <div id="admin-logs"></div>
     </div>
   </div>
