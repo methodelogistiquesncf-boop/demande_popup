@@ -1,1156 +1,157 @@
 <!DOCTYPE html>
-<html lang="fr" data-theme="light">
+<html lang="fr">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Demandes Modification Popups — V2</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-
-<script type="module">
-  // ── ✅ IMPORTS CORRIGÉS (uniquement ce qui existe vraiment) ──
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-  import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
-           query, orderBy, where, onSnapshot, serverTimestamp, getDoc, setDoc, getDocs }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-
-  const firebaseConfig = {
-    apiKey: "AIzaSyAgyjanFGdNCe23ptWtrLgI1wUSZij5y9I",
-    authDomain: "popup-67e28.firebaseapp.com",
-    projectId: "popup-67e28",
-    storageBucket: "popup-67e28.firebasestorage.app",
-    messagingSenderId: "1089603775753",
-    appId: "1:1089603775753:web:0eda8de1f0b5d6e34af7d8"
-  };
-
-  const INITIAL_ADMIN = "michael.frischherz@sncf.fr";
-
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getFirestore(app);
-  const rolesRef = doc(db, "config", "roles");
-  const usersRef = collection(db, "users");
-  const logsRef = collection(db, "logs", "role_changes", "history");
-
-  let currentUser = null;
-  let userRole = "lecteur";
-  let adminEmails = [];
-  let qualiteEmails = [];
-  let allUsers = [];
-  let unsubDemandes = null;
-  let activeTab = "demandes";
-  let allDemandes = [];
-  let currentFilter = "all";
-  let currentSearch = "";
-  let userSearch = "";
-  let userRoleFilter = "all";
-  let formModified = false;
-  let currentPage = 1;
-  const ITEMS_PER_PAGE = 20;
-
-  // ── Thème ──
-  const savedTheme = localStorage.getItem("theme") || "light";
-  document.documentElement.setAttribute("data-theme", savedTheme);
-
-  window.toggleTheme = () => {
-    const current = document.documentElement.getAttribute("data-theme");
-    const newTheme = current === "light" ? "dark" : "light";
-    document.documentElement.setAttribute("data-theme", newTheme);
-    localStorage.setItem("theme", newTheme);
-    document.getElementById("theme-icon").textContent = newTheme === "dark" ? "☀️" : "🌙";
-  };
-
-  // ── Utilitaires ──
-  function fmt(ts) {
-    if (!ts) return "—";
-    const d = ts.toDate ? ts.toDate() : new Date(ts);
-    const now = new Date();
-    const diff = now - d;
-    if (diff < 60000) return "À l'instant";
-    if (diff < 3600000) return `Il y a ${Math.floor(diff / 60000)} min`;
-    if (diff < 86400000) return `Il y a ${Math.floor(diff / 3600000)} h`;
-    if (diff < 604800000) return `Il y a ${Math.floor(diff / 86400000)} j`;
-    return d.toLocaleDateString("fr-FR", {
-      day: "2-digit", month: "2-digit", year: "numeric",
-      hour: "2-digit", minute: "2-digit"
-    });
-  }
-
-  function statusBadge(status) {
-    const map = {
-      nouveau: { label: "Nouveau", cls: "badge-new", icon: "🆕" },
-      en_cours: { label: "En cours", cls: "badge-wip", icon: "⚡" },
-      resolu: { label: "Résolu", cls: "badge-done", icon: "✅" },
-    };
-    const s = map[status] || map.nouveau;
-    return `<span class="badge ${s.cls}">${s.icon} ${s.label}</span>`;
-  }
-
-  function priorityBadge(priority) {
-    const map = {
-      haute: { label: "Haute", cls: "priority-high", icon: "🔴" },
-      moyenne: { label: "Moyenne", cls: "priority-med", icon: "🟡" },
-      basse: { label: "Basse", cls: "priority-low", icon: "🟢" },
-    };
-    const p = map[priority] || map.moyenne;
-    return `<span class="priority-badge ${p.cls}">${p.icon} ${p.label}</span>`;
-  }
-
-  function roleBadge(role) {
-    const map = {
-      admin: { label: "Admin", cls: "role-admin", icon: "👑" },
-      qualite: { label: "Qualité", cls: "role-qualite", icon: "📧" },
-      lecteur: { label: "Lecteur", cls: "role-lecteur", icon: "👁" },
-    };
-    const r = map[role] || map.lecteur;
-    return `<span class="role-badge ${r.cls}">${r.icon} ${r.label}</span>`;
-  }
-
-  function sanitize(str) {
-    if (!str) return "";
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
-
-  function validateEmail(email) {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  }
-
-  // ── Toast ──
-  function showToast(message, type = "info", duration = 4000) {
-    const toast = document.createElement("div");
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-      <div class="toast-content">
-        <span class="toast-icon">${type === "success" ? "✓" : type === "error" ? "✕" : "ℹ"}</span>
-        <span class="toast-message">${sanitize(message)}</span>
-      </div>`;
-    document.getElementById("toast-container").appendChild(toast);
-    setTimeout(() => toast.classList.add("show"), 100);
-    setTimeout(() => {
-      toast.classList.remove("show");
-      setTimeout(() => toast.remove(), 300);
-    }, duration);
-  }
-
-  // ── Modal ──
-  function showConfirm(title, message, confirmText = "Confirmer", cancelText = "Annuler") {
-    return new Promise(resolve => {
-      const modal = document.getElementById("confirm-modal");
-      document.getElementById("confirm-title").textContent = title;
-      document.getElementById("confirm-message").textContent = message;
-      document.getElementById("confirm-yes").textContent = confirmText;
-      document.getElementById("confirm-no").textContent = cancelText;
-      modal.classList.add("show");
-
-      const confirm = () => { modal.classList.remove("show"); resolve(true); };
-      const cancel = () => { modal.classList.remove("show"); resolve(false); };
-
-      document.getElementById("confirm-yes").onclick = confirm;
-      document.getElementById("confirm-no").onclick = cancel;
-    });
-  }
-
-  // ── Rôles ──
-  async function loadRoles() {
-    try {
-      const snap = await getDoc(rolesRef);
-      if (snap.exists()) {
-        const data = snap.data();
-        adminEmails = data.admin || [];
-        qualiteEmails = data.qualite || [];
-        if (adminEmails.length === 0) {
-          adminEmails = [INITIAL_ADMIN];
-          await saveRoles();
-        }
-      } else {
-        adminEmails = [INITIAL_ADMIN];
-        qualiteEmails = [];
-        await saveRoles();
-      }
-    } catch (e) {
-      adminEmails = [INITIAL_ADMIN];
-      qualiteEmails = [];
-    }
-  }
-
-  async function saveRoles() {
-    await setDoc(rolesRef, { admin: adminEmails, qualite: qualiteEmails });
-  }
-
-  function getRoleForEmail(email) {
-    if (adminEmails.includes(email)) return "admin";
-    if (qualiteEmails.includes(email)) return "qualite";
-    return "lecteur";
-  }
-
-  function getRoleLabel(role) {
-    return { admin: "Administrateur", qualite: "Service Qualité", lecteur: "Lecteur" }[role] || "Lecteur";
-  }
-
-  // ── Logs ──
-  async function logChange(action, targetEmail, details = "") {
-    try {
-      await addDoc(logsRef, {
-        userEmail: currentUser?.email || "system",
-        userRole: getRoleForEmail(currentUser?.email || ""),
-        action, targetEmail, details,
-        timestamp: serverTimestamp()
-      });
-    } catch (e) {
-      console.error("Erreur log:", e);
-    }
-  }
-
-  // ── Utilisateurs (document Firestore) ──
-  async function registerUserInDB(user) {
-    try {
-      const userDoc = doc(db, "users", user.uid);
-      const snap = await getDoc(userDoc);
-      if (!snap.exists()) {
-        await setDoc(userDoc, {
-          email: user.email,
-          displayName: user.displayName || "",
-          role: getRoleForEmail(user.email),
-          createdAt: serverTimestamp(),
-          lastLogin: serverTimestamp(),
-          active: true
-        });
-      } else {
-        await updateDoc(userDoc, {
-          lastLogin: serverTimestamp(),
-          role: getRoleForEmail(user.email)
-        });
-      }
-    } catch (e) {
-      console.warn("Erreur enregistrement user:", e);
-    }
-  }
-
-  async function loadUsers() {
-    try {
-      const snap = await getDocs(usersRef);
-      allUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    } catch (e) {
-      console.warn("Erreur chargement users:", e);
-      allUsers = [];
-    }
-  }
-
-  // ── Onglets ──
-  window.switchTab = function(tab) {
-    activeTab = tab;
-    document.querySelectorAll(".tab-btn").forEach(b =>
-      b.classList.toggle("active", b.dataset.tab === tab));
-    document.getElementById("panel-demandes").style.display = tab === "demandes" ? "flex" : "none";
-    document.getElementById("panel-admin").style.display = tab === "admin" ? "block" : "none";
-    if (tab === "admin") renderAdmin();
-  };
-
-  // ── Filtres ──
-  window.filterDemandes = function(filter) {
-    currentFilter = filter;
-    currentPage = 1;
-    document.querySelectorAll(".filter-btn").forEach(b =>
-      b.classList.toggle("active", b.dataset.filter === filter));
-    renderDemandes(getFilteredDemandes());
-  };
-
-  window.searchDemandes = function(q) {
-    currentSearch = q.toLowerCase();
-    currentPage = 1;
-    renderDemandes(getFilteredDemandes());
-  };
-
-  window.searchUsers = function(q) {
-    userSearch = q.toLowerCase();
-    renderUsers();
-  };
-
-  window.filterUsers = function(role) {
-    userRoleFilter = role;
-    document.querySelectorAll(".user-filter-btn").forEach(b =>
-      b.classList.toggle("active", b.dataset.role === role));
-    renderUsers();
-  };
-
-  function getFilteredDemandes() {
-    let filtered = allDemandes;
-    if (currentFilter !== "all") filtered = filtered.filter(d => d.statut === currentFilter);
-    if (currentSearch) {
-      filtered = filtered.filter(d =>
-        (d.symbole || "").toLowerCase().includes(currentSearch) ||
-        (d.demandeur || "").toLowerCase().includes(currentSearch) ||
-        (d.raison || "").toLowerCase().includes(currentSearch) ||
-        (d.reponse && d.reponse.toLowerCase().includes(currentSearch)) ||
-        (d.demandeurEmail && d.demandeurEmail.toLowerCase().includes(currentSearch))
-      );
-    }
-    return filtered;
-  }
-
-  function getFilteredUsers() {
-    let filtered = allUsers;
-    if (userRoleFilter !== "all") {
-      filtered = filtered.filter(u => getRoleForEmail(u.email) === userRoleFilter);
-    }
-    if (userSearch) {
-      filtered = filtered.filter(u =>
-        (u.email || "").toLowerCase().includes(userSearch) ||
-        (u.displayName || "").toLowerCase().includes(userSearch)
-      );
-    }
-    return filtered;
-  }
-
-  function updateStats(demandes) {
-    const total = demandes.length;
-    const nouveau = demandes.filter(d => d.statut === "nouveau").length;
-    const enCours = demandes.filter(d => d.statut === "en_cours").length;
-    const resolu = demandes.filter(d => d.statut === "resolu").length;
-    document.getElementById("stat-total").textContent = total;
-    document.getElementById("stat-nouveau").textContent = nouveau;
-    document.getElementById("stat-encours").textContent = enCours;
-    document.getElementById("stat-resolu").textContent = resolu;
-  }
-
-  function renderPagination(total) {
-    const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
-    const pagination = document.getElementById("pagination");
-    if (totalPages <= 1) { pagination.innerHTML = ""; return; }
-    let html = '<div class="pagination-controls">';
-    html += `<button onclick="changePage(${Math.max(1, currentPage - 1)})" ${currentPage === 1 ? 'disabled' : ''}>‹</button>`;
-    for (let i = 1; i <= totalPages; i++) {
-      if (i === 1 || i === totalPages || (i >= currentPage - 1 && i <= currentPage + 1)) {
-        html += `<button class="${i === currentPage ? 'active' : ''}" onclick="changePage(${i})">${i}</button>`;
-      } else if (i === currentPage - 2 || i === currentPage + 2) {
-        html += `<span class="ellipsis">…</span>`;
-      }
-    }
-    html += `<button onclick="changePage(${Math.min(totalPages, currentPage + 1)})" ${currentPage === totalPages ? 'disabled' : ''}>›</button>`;
-    html += `<span class="pagination-info">Page ${currentPage}/${totalPages} (${total})</span>`;
-    html += '</div>';
-    pagination.innerHTML = html;
-  }
-
-  window.changePage = function(page) {
-    currentPage = page;
-    renderDemandes(getFilteredDemandes());
-  };
-
-  function renderDemandes(demandes) {
-    const list = document.getElementById("list");
-    const isPrivileged = userRole === "admin" || userRole === "qualite";
-    if (!demandes.length) {
-      list.innerHTML = `<div class="empty"><div class="empty-icon">📭</div><p>${currentFilter !== "all" || currentSearch ? "Aucune demande ne correspond." : "Aucune demande."}</p></div>`;
-      document.getElementById("pagination").innerHTML = "";
-      return;
-    }
-    const start = (currentPage - 1) * ITEMS_PER_PAGE;
-    const pageDemandes = demandes.slice(start, start + ITEMS_PER_PAGE);
-    list.innerHTML = pageDemandes.map(d => `
-      <div class="card" data-id="${d.id}">
-        <div class="card-header">
-          <div class="symbol-badge">${sanitize(d.symbole)}</div>
-          <div class="card-meta">
-            <span class="meta-who">${sanitize(d.demandeur)}</span>
-            <span class="meta-date">${fmt(d.dateDemande)}</span>
-            ${isPrivileged ? `<span class="meta-email">${sanitize(d.demandeurEmail)}</span>` : ""}
-          </div>
-          <div class="card-badges">${statusBadge(d.statut)}${d.priorite ? priorityBadge(d.priorite) : ""}</div>
-        </div>
-        <div class="card-reason"><span class="label-reason">Raison</span><p>${sanitize(d.raison)}</p></div>
-        ${d.reponse ? `<div class="card-reply"><span class="label-reply">✓ Réponse Qualité</span><p>${sanitize(d.reponse)}</p><span class="reply-date">${fmt(d.dateReponse)}${d.repondantEmail ? ` — ${sanitize(d.repondantEmail)}` : ""}</span></div>` : ""}
-        ${isPrivileged ? `
-        <div class="card-actions">
-          <div class="action-row">
-            <select class="select-status" data-id="${d.id}">
-              <option value="nouveau" ${d.statut === "nouveau" ? "selected" : ""}>🆕 Nouveau</option>
-              <option value="en_cours" ${d.statut === "en_cours" ? "selected" : ""}>⚡ En cours</option>
-              <option value="resolu" ${d.statut === "resolu" ? "selected" : ""}>✅ Résolu</option>
-            </select>
-            <select class="select-priority" data-id="${d.id}">
-              <option value="">Priorité</option>
-              <option value="haute" ${d.priorite === "haute" ? "selected" : ""}>🔴 Haute</option>
-              <option value="moyenne" ${d.priorite === "moyenne" ? "selected" : ""}>🟡 Moyenne</option>
-              <option value="basse" ${d.priorite === "basse" ? "selected" : ""}>🟢 Basse</option>
-            </select>
-          </div>
-          <textarea class="reply-input" placeholder="Réponse…" data-id="${d.id}">${sanitize(d.reponse || "")}</textarea>
-          <div class="action-buttons">
-            <button class="btn-reply" data-id="${d.id}">💾 Enregistrer</button>
-            <button class="btn-delete" data-id="${d.id}" title="Supprimer">🗑️</button>
-          </div>
-        </div>` : ""}
-      </div>`).join("");
-
-    renderPagination(demandes.length);
-
-    list.querySelectorAll(".btn-reply").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const id = btn.dataset.id;
-        const reponse = list.querySelector(`.reply-input[data-id="${id}"]`).value.trim();
-        const statut = list.querySelector(`.select-status[data-id="${id}"]`).value;
-        const priorite = list.querySelector(`.select-priority[data-id="${id}"]`).value || null;
-        if (!reponse) { showToast("Veuillez saisir une réponse.", "error"); return; }
-        btn.disabled = true;
-        btn.textContent = "⏳";
-        try {
-          await updateDoc(doc(db, "demandes", id), {
-            reponse, statut, priorite,
-            dateReponse: serverTimestamp(),
-            repondantEmail: currentUser.email
-          });
-          await logChange("reply_demande", id, `Statut: ${statut}`);
-          showToast("Réponse enregistrée !", "success");
-          btn.textContent = "✓";
-        } catch (e) {
-          showToast("Erreur : " + e.message, "error");
-          btn.textContent = "💾 Enregistrer";
-        }
-        btn.disabled = false;
-      });
-    });
-
-    list.querySelectorAll(".btn-delete").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const id = btn.dataset.id;
-        const confirmed = await showConfirm("Supprimer", "Supprimer cette demande ?", "Supprimer", "Annuler");
-        if (!confirmed) return;
-        try {
-          await deleteDoc(doc(db, "demandes", id));
-          await logChange("delete_demande", id);
-          showToast("Supprimée", "success");
-        } catch (e) {
-          showToast("Erreur : " + e.message, "error");
-        }
-      });
-    });
-  }
-
-  function startListen() {
-    if (unsubDemandes) unsubDemandes();
-    const q = query(collection(db, "demandes"), orderBy("dateDemande", "desc"));
-    unsubDemandes = onSnapshot(q, snap => {
-      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const isPrivileged = userRole === "admin" || userRole === "qualite";
-      allDemandes = isPrivileged ? all : all.filter(d => d.demandeurEmail === currentUser.email);
-      updateStats(allDemandes);
-      renderDemandes(getFilteredDemandes());
-    });
-  }
-
-  window.submitDemande = async function() {
-    const symbole = document.getElementById("f-symbole").value.trim();
-    const raison = document.getElementById("f-raison").value.trim();
-    const demandeur = document.getElementById("f-demandeur").value.trim();
-    const categorie = document.getElementById("f-categorie").value;
-    if (!symbole || !raison || !demandeur) { showToast("Champs obligatoires.", "error"); return; }
-    const btn = document.getElementById("btn-submit");
-    btn.disabled = true;
-    btn.textContent = "⏳ Envoi…";
-    try {
-      await addDoc(collection(db, "demandes"), {
-        symbole, raison, demandeur, categorie,
-        demandeurEmail: currentUser.email,
-        dateDemande: serverTimestamp(),
-        statut: "nouveau",
-        reponse: null, dateReponse: null, priorite: null
-      });
-      document.getElementById("f-symbole").value = "";
-      document.getElementById("f-raison").value = "";
-      document.getElementById("f-demandeur").value = "";
-      formModified = false;
-      await logChange("create_demande", symbole);
-      showToast("Demande envoyée !", "success");
-    } catch (e) {
-      showToast("Erreur : " + e.message, "error");
-    }
-    btn.disabled = false;
-    btn.textContent = "🚀 Envoyer la demande";
-  };
-
-  // ═════════ ADMIN ═════════
-  function renderAdmin() {
-    renderAdminStats();
-    renderAdminSection();
-    renderUsers();
-    renderAdminLogs();
-  }
-
-  function renderAdminStats() {
-    const totalUsers = allUsers.length;
-    const totalAdmins = adminEmails.length;
-    const totalQualite = qualiteEmails.length;
-    const totalLecteurs = totalUsers - totalAdmins - totalQualite;
-    document.getElementById("stat-admins").textContent = totalAdmins;
-    document.getElementById("stat-qualite").textContent = totalQualite;
-    document.getElementById("stat-lecteurs").textContent = Math.max(0, totalLecteurs);
-    document.getElementById("stat-users-total").textContent = totalUsers;
-    document.getElementById("stat-demandes-total").textContent = allDemandes.length;
-  }
-
-  function renderAdminSection() {
-    const adminPanel = document.getElementById("admin-list");
-    if (!adminEmails.length) {
-      adminPanel.innerHTML = `<div class="admin-empty">Aucun administrateur.</div>`;
-    } else {
-      adminPanel.innerHTML = adminEmails.map((email, i) => `
-        <div class="admin-email-row">
-          <div class="admin-email-info">
-            <span class="admin-email-text">👑 ${sanitize(email)}</span>
-            ${email === INITIAL_ADMIN ? '<span class="admin-badge">Initial</span>' : ''}
-          </div>
-          <div class="admin-email-actions">
-            ${email !== currentUser.email ? `
-              <button class="btn-role btn-role-qualite" onclick="changeRole('${sanitize(email)}', 'qualite')">📧 Qualité</button>
-              <button class="btn-role btn-role-lecteur" onclick="changeRole('${sanitize(email)}', 'lecteur')">👁 Lecteur</button>
-            ` : '<span class="admin-self">Vous</span>'}
-          </div>
-        </div>`).join("");
-    }
-
-    const qualitePanel = document.getElementById("qualite-list");
-    if (!qualiteEmails.length) {
-      qualitePanel.innerHTML = `<div class="admin-empty">Aucun membre Qualité.</div>`;
-    } else {
-      qualitePanel.innerHTML = qualiteEmails.map((email, i) => `
-        <div class="admin-email-row">
-          <div class="admin-email-info">
-            <span class="admin-email-text">📧 ${sanitize(email)}</span>
-          </div>
-          <div class="admin-email-actions">
-            <button class="btn-role btn-role-admin" onclick="changeRole('${sanitize(email)}', 'admin')">👑 Admin</button>
-            <button class="btn-role btn-role-lecteur" onclick="changeRole('${sanitize(email)}', 'lecteur')">👁 Lecteur</button>
-          </div>
-        </div>`).join("");
-    }
-  }
-
-  function renderUsers() {
-    const filtered = getFilteredUsers();
-    const panel = document.getElementById("users-list");
-    if (!filtered.length) {
-      panel.innerHTML = `<div class="admin-empty">Aucun utilisateur trouvé.</div>`;
-      return;
-    }
-    panel.innerHTML = filtered.map(u => {
-      const role = getRoleForEmail(u.email);
-      return `
-        <div class="user-row">
-          <div class="user-info">
-            <div class="user-avatar">${(u.email || "?")[0].toUpperCase()}</div>
-            <div class="user-details">
-              <div class="user-email">${sanitize(u.email)}</div>
-              <div class="user-meta">
-                ${u.displayName ? `<span>${sanitize(u.displayName)}</span>` : ""}
-                <span>Inscrit ${fmt(u.createdAt)}</span>
-                <span>Dernière connexion ${fmt(u.lastLogin)}</span>
-              </div>
-            </div>
-          </div>
-          <div class="user-role-info">${roleBadge(role)}</div>
-          <div class="user-actions">
-            <select class="user-role-select" data-email="${sanitize(u.email)}" onchange="onUserRoleChange(this)">
-              <option value="admin" ${role === 'admin' ? 'selected' : ''}>👑 Admin</option>
-              <option value="qualite" ${role === 'qualite' ? 'selected' : ''}>📧 Qualité</option>
-              <option value="lecteur" ${role === 'lecteur' ? 'selected' : ''}>👁 Lecteur</option>
-            </select>
-          </div>
-        </div>`;
-    }).join("");
-  }
-
-  window.onUserRoleChange = async function(select) {
-    const email = select.dataset.email;
-    const newRole = select.value;
-    const oldRole = getRoleForEmail(email);
-    if (newRole === oldRole) return;
-    const confirmed = await showConfirm("Changer le rôle", `Changer ${email} de "${oldRole}" vers "${newRole}" ?`, "Changer", "Annuler");
-    if (!confirmed) { select.value = oldRole; return; }
-    await changeRole(email, newRole);
-  };
-
-  window.changeRole = async function(email, newRole) {
-    const oldRole = getRoleForEmail(email);
-    if (oldRole === newRole) return;
-    adminEmails = adminEmails.filter(e => e !== email);
-    qualiteEmails = qualiteEmails.filter(e => e !== email);
-    if (newRole === "admin") adminEmails = [...adminEmails, email];
-    if (newRole === "qualite") qualiteEmails = [...qualiteEmails, email];
-    await saveRoles();
-
-    const userQuery = query(usersRef, where("email", "==", email));
-    const snap = await getDocs(userQuery);
-    for (const d of snap.docs) {
-      try { await updateDoc(doc(db, "users", d.id), { role: newRole }); } catch(e) {}
-    }
-
-    await logChange("change_role", email, `De "${oldRole}" vers "${newRole}"`);
-    showToast(`${email} est maintenant ${getRoleLabel(newRole)}.`, "success");
-
-    if (currentUser && email === currentUser.email) {
-      userRole = newRole;
-      document.getElementById("user-role").textContent = getRoleLabel(newRole);
-      document.getElementById("tab-admin").style.display = userRole === "admin" ? "inline-flex" : "none";
-      document.getElementById("form-section").style.display = (userRole === "lecteur") ? "block" : "none";
-    }
-    renderAdmin();
-  };
-
-  async function renderAdminLogs() {
-    const logsPanel = document.getElementById("admin-logs");
-    try {
-      const q = query(logsRef, orderBy("timestamp", "desc"));
-      const snap = await getDocs(q);
-      if (snap.empty) { logsPanel.innerHTML = `<div class="admin-empty">Aucun historique.</div>`; return; }
-      const logs = snap.docs.slice(0, 50).map(d => ({ id: d.id, ...d.data() }));
-      logsPanel.innerHTML = logs.map(log => {
-        const actionLabels = {
-          "change_role": { label: "Changement rôle", icon: "🔄", color: "var(--blue)" },
-          "create_demande": { label: "Création demande", icon: "📝", color: "var(--green)" },
-          "reply_demande": { label: "Réponse", icon: "💬", color: "var(--blue)" },
-          "delete_demande": { label: "Suppression", icon: "🗑️", color: "var(--red)" },
-          "login": { label: "Connexion", icon: "🔑", color: "var(--green)" }
-        };
-        const action = actionLabels[log.action] || { label: log.action, icon: "📝", color: "var(--text-secondary)" };
-        return `
-          <div class="log-entry">
-            <div class="log-header">
-              <span class="log-icon" style="color: ${action.color}">${action.icon}</span>
-              <span class="log-action">${action.label}</span>
-              <span class="log-target">${sanitize(log.targetEmail)}</span>
-            </div>
-            <div class="log-meta">
-              <span class="log-user">Par ${sanitize(log.userEmail)}</span>
-              <span class="log-date">${fmt(log.timestamp)}</span>
-            </div>
-            ${log.details ? `<div class="log-details">${sanitize(log.details)}</div>` : ""}
-          </div>`;
-      }).join("");
-    } catch (e) {
-      logsPanel.innerHTML = `<div class="admin-empty">Erreur logs.</div>`;
-    }
-  }
-
-  window.addAdmin = async function() {
-    const input = document.getElementById("admin-new-email");
-    const email = input.value.trim().toLowerCase();
-    if (!validateEmail(email)) { showToast("Email invalide.", "error"); return; }
-    if (adminEmails.includes(email)) { showToast("Déjà admin.", "error"); return; }
-    qualiteEmails = qualiteEmails.filter(e => e !== email);
-    adminEmails = [...adminEmails, email];
-    await saveRoles();
-    await logChange("change_role", email, "Promu admin");
-    input.value = "";
-    showToast(`${email} promu admin.`, "success");
-    renderAdmin();
-  };
-
-  window.addQualite = async function() {
-    const input = document.getElementById("qualite-new-email");
-    const email = input.value.trim().toLowerCase();
-    if (!validateEmail(email)) { showToast("Email invalide.", "error"); return; }
-    if (qualiteEmails.includes(email)) { showToast("Déjà Qualité.", "error"); return; }
-    adminEmails = adminEmails.filter(e => e !== email);
-    qualiteEmails = [...qualiteEmails, email];
-    await saveRoles();
-    await logChange("change_role", email, "Ajouté Qualité");
-    input.value = "";
-    showToast(`${email} ajouté au service Qualité.`, "success");
-    renderAdmin();
-  };
-
-  // ── Export CSV ──
-  window.exportCSV = function() {
-    if (!allDemandes.length) { showToast("Rien à exporter.", "error"); return; }
-    const headers = ["Symbole", "Demandeur", "Email", "Catégorie", "Raison", "Statut", "Priorité", "Date", "Réponse"];
-    const rows = allDemandes.map(d => [
-      d.symbole || "", d.demandeur || "", d.demandeurEmail || "", d.categorie || "-",
-      (d.raison || "").replace(/"/g, '""'), d.statut || "", d.priorite || "-",
-      fmt(d.dateDemande), (d.reponse || "").replace(/"/g, '""')
-    ]);
-    const csv = [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(",")).join("\n");
-    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `demandes_${new Date().toISOString().split("T")[0]}.csv`;
-    link.click();
-    showToast("Export CSV téléchargé !", "success");
-  };
-
-  // ═════════ AUTH ═════════
-  window.doLogin = async function() {
-    const email = document.getElementById("login-email").value.trim();
-    const pass = document.getElementById("login-pass").value;
-    if (!validateEmail(email)) { showToast("Email invalide.", "error"); return; }
-    if (!pass || pass.length < 6) { showToast("Mot de passe invalide.", "error"); return; }
-    const btn = document.querySelector("#screen-login .btn-primary");
-    btn.disabled = true;
-    btn.textContent = "⏳ Connexion…";
-    try {
-      await signInWithEmailAndPassword(auth, email, pass);
-    } catch (e) {
-      let msg = "Identifiants incorrects";
-      if (e.code === "auth/user-not-found") msg = "Utilisateur introuvable";
-      else if (e.code === "auth/wrong-password" || e.code === "auth/invalid-credential") msg = "Mot de passe incorrect";
-      else if (e.code === "auth/too-many-requests") msg = "Trop de tentatives. Réessayez plus tard";
-      else if (e.code === "auth/invalid-email") msg = "Email invalide";
-      showToast(msg, "error");
-      console.error("Login error:", e);
-    }
-    btn.disabled = false;
-    btn.textContent = "Se connecter";
-  };
-
-  window.doLogout = async function() {
-    if (formModified) {
-      const confirmed = await showConfirm("Déconnexion", "Des modifications ne sont pas envoyées.", "Déconnecter", "Rester");
-      if (!confirmed) return;
-    }
-    if (unsubDemandes) unsubDemandes();
-    await signOut(auth);
-    showToast("Déconnexion réussie", "success");
-  };
-
-  document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-      e.preventDefault();
-      document.getElementById("search-input")?.focus();
-    }
-  });
-
-  // ═════════ AUTH STATE ═════════
-  onAuthStateChanged(auth, async user => {
-    currentUser = user;
-    if (user) {
-      await loadRoles();
-      userRole = getRoleForEmail(user.email);
-      await registerUserInDB(user);
-      await loadUsers();
-      await logChange("login", user.email, `Rôle: ${userRole}`);
-
-      document.getElementById("screen-login").style.display = "none";
-      document.getElementById("screen-app").style.display = "flex";
-      document.getElementById("user-email").textContent = user.email;
-      document.getElementById("user-role").textContent = getRoleLabel(userRole);
-
-      document.getElementById("tab-admin").style.display = userRole === "admin" ? "inline-flex" : "none";
-      document.getElementById("form-section").style.display = (userRole === "lecteur") ? "block" : "none";
-      document.getElementById("btn-export").style.display = (userRole === "admin" || userRole === "qualite") ? "inline-flex" : "none";
-
-      switchTab("demandes");
-      startListen();
-      showToast(`Bienvenue ${user.email} !`, "success");
-    } else {
-      document.getElementById("screen-login").style.display = "flex";
-      document.getElementById("screen-app").style.display = "none";
-      allDemandes = [];
-      allUsers = [];
-    }
-  });
-
-  ["f-symbole", "f-raison", "f-demandeur"].forEach(id => {
-    document.getElementById(id).addEventListener("input", () => formModified = true);
-  });
-
-  window.addEventListener("beforeunload", (e) => {
-    if (formModified) { e.preventDefault(); e.returnValue = ""; }
-  });
-</script>
-
-<style>
-:root {
-  --navy: #1A2F4E; --navy2: #243d63; --bg: #F7F9FC; --bg-card: #ffffff;
-  --text: #1a1a2e; --text-secondary: #6B7A8D; --orange: #E05A00;
-  --orange-hover: #c44e00; --green: #2E7D52; --red: #c0392b;
-  --red-light: #fde8e8; --blue: #1565C0; --blue-light: #E3F2FD;
-  --border: #DDE3EC; --white: #ffffff; --font: 'Inter', sans-serif;
-  --radius: 12px; --shadow: 0 2px 8px rgba(0,0,0,.04);
-  --shadow-hover: 0 4px 16px rgba(0,0,0,.08); --transition: all 0.2s ease;
-}
-[data-theme="dark"] {
-  --bg: #0f1419; --bg-card: #1a1f2e; --text: #e4e6eb;
-  --text-secondary: #b0b3b8; --border: #2d333b;
-}
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
-
-#toast-container { position: fixed; top: 20px; right: 20px; z-index: 10000; display: flex; flex-direction: column; gap: 10px; }
-.toast { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 20px; box-shadow: 0 8px 24px rgba(0,0,0,.15); transform: translateX(400px); transition: transform 0.3s; max-width: 360px; }
-.toast.show { transform: translateX(0); }
-.toast-content { display: flex; align-items: center; gap: 10px; }
-.toast-success { border-left: 4px solid var(--green); }
-.toast-error { border-left: 4px solid var(--red); }
-.toast-info { border-left: 4px solid var(--blue); }
-
-#confirm-modal { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 9999; }
-#confirm-modal.show { display: flex; }
-.modal-content { background: var(--bg-card); border-radius: 16px; padding: 32px; max-width: 400px; width: 90%; }
-.modal-content h3 { margin-bottom: 12px; }
-.modal-content p { margin-bottom: 24px; color: var(--text-secondary); }
-.modal-actions { display: flex; gap: 12px; justify-content: flex-end; }
-.btn-modal { padding: 10px 20px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; }
-.btn-modal-cancel { background: var(--border); color: var(--text); }
-.btn-modal-confirm { background: var(--red); color: var(--white); }
-
-#screen-login { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%); padding: 20px; }
-.login-box { background: var(--white); border-radius: 20px; padding: 48px 40px; width: 400px; max-width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
-.login-logo { text-align: center; margin-bottom: 32px; }
-.login-logo .icon { font-size: 48px; }
-.login-logo h1 { font-size: 20px; font-weight: 800; color: var(--navy); margin-top: 12px; }
-.field { margin-bottom: 20px; }
-.field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; text-transform: uppercase; }
-.field input, .field textarea, .field select { width: 100%; padding: 12px 14px; border: 1.5px solid var(--border); border-radius: 10px; font-family: var(--font); font-size: 14px; color: var(--text); background: var(--bg-card); }
-.field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--orange); }
-.btn-primary { width: 100%; padding: 14px; background: var(--orange); color: var(--white); border: none; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; }
-.btn-primary:hover:not(:disabled) { background: var(--orange-hover); }
-.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-
-#screen-app { display: none; flex-direction: column; min-height: 100vh; }
-.topbar { background: var(--navy); color: var(--white); padding: 0 24px; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-.topbar-left { display: flex; align-items: center; gap: 16px; flex: 1; }
-.topbar-left .ticon { font-size: 24px; }
-.tabs { display: flex; gap: 6px; margin-left: 24px; }
-.tab-btn { background: rgba(255,255,255,.1); border: none; color: rgba(255,255,255,.7); border-radius: 8px; padding: 8px 16px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
-.tab-btn.active { background: var(--orange); color: #fff; }
-.topbar-right { display: flex; align-items: center; gap: 12px; }
-.theme-toggle { background: rgba(255,255,255,.1); border: none; color: var(--white); border-radius: 50%; width: 36px; height: 36px; cursor: pointer; }
-.user-pill { background: rgba(255,255,255,.12); border-radius: 20px; padding: 6px 14px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
-.user-pill strong { color: #fff; }
-.user-pill .role { color: #aac4ff; font-size: 11px; background: rgba(255,255,255,.15); padding: 2px 8px; border-radius: 12px; }
-.btn-logout { background: rgba(255,255,255,.15); border: none; color: var(--white); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
-
-#panel-demandes { display: flex; flex: 1; }
-#panel-admin { display: none; padding: 40px 24px; max-width: 1400px; margin: 0 auto; width: 100%; }
-#form-section { width: 340px; min-width: 340px; background: var(--bg-card); border-right: 1px solid var(--border); padding: 28px 24px; height: calc(100vh - 60px); position: sticky; top: 60px; overflow-y: auto; }
-#form-section h3 { margin-bottom: 24px; padding-bottom: 14px; border-bottom: 2px solid var(--orange); }
-
-.stats-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
-.stat-card { background: var(--bg); border-radius: 10px; padding: 14px 16px; text-align: center; }
-.stat-number { font-size: 24px; font-weight: 800; display: block; }
-.stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
-.stat-nouveau .stat-number { color: var(--orange); }
-.stat-encours .stat-number { color: var(--blue); }
-.stat-resolu .stat-number { color: var(--green); }
-
-.list-panel { flex: 1; padding: 24px; overflow-y: auto; height: calc(100vh - 60px); background: var(--bg); }
-.list-toolbar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-.search-box { flex: 1; min-width: 200px; position: relative; }
-.search-box input { width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid var(--border); border-radius: 10px; }
-.search-box::before { content: "🔍"; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); }
-.filter-group { display: flex; gap: 6px; }
-.filter-btn { background: var(--bg-card); border: 1.5px solid var(--border); border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
-.filter-btn.active { background: var(--orange); color: var(--white); border-color: var(--orange); }
-.btn-export { background: var(--green); color: var(--white); border: none; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
-
-#list { display: flex; flex-direction: column; gap: 16px; }
-.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow); }
-.card:hover { box-shadow: var(--shadow-hover); }
-.card-header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
-.symbol-badge { background: var(--navy); color: var(--white); border-radius: 10px; padding: 8px 14px; font-family: 'Courier New', monospace; font-weight: 700; }
-.card-meta { flex: 1; }
-.meta-who { display: block; font-weight: 700; }
-.meta-date { font-size: 12px; color: var(--text-secondary); }
-.meta-email { display: block; font-size: 11px; color: var(--text-secondary); margin-top: 2px; font-style: italic; }
-.badge { border-radius: 20px; padding: 5px 12px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
-.badge-new { background: #FFF3E0; color: #E65100; }
-.badge-wip { background: var(--blue-light); color: var(--blue); }
-.badge-done { background: #E8F5E9; color: var(--green); }
-.priority-badge { border-radius: 20px; padding: 5px 12px; font-size: 11px; font-weight: 700; }
-.priority-high { background: #FFEBEE; color: #C62828; }
-.priority-med { background: #FFF9C4; color: #F57F17; }
-.priority-low { background: #E8F5E9; color: #2E7D32; }
-.label-reason, .label-reply { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-secondary); display: block; margin-bottom: 6px; }
-.card-reply { margin-top: 14px; background: #e8f5ee; border-radius: 10px; padding: 14px 16px; border-left: 4px solid var(--green); }
-.label-reply { color: var(--green); }
-.card-actions { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
-.action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-.select-status, .select-priority { padding: 9px 12px; border: 1.5px solid var(--border); border-radius: 8px; }
-.reply-input { width: 100%; padding: 11px 14px; border: 1.5px solid var(--border); border-radius: 8px; min-height: 80px; resize: vertical; margin-bottom: 10px; }
-.action-buttons { display: flex; gap: 10px; justify-content: flex-end; }
-.btn-reply { padding: 10px 20px; background: var(--green); color: var(--white); border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
-.btn-delete { padding: 10px 16px; background: var(--red-light); color: var(--red); border: none; border-radius: 8px; cursor: pointer; }
-.empty { text-align: center; color: var(--text-secondary); padding: 80px 20px; }
-.empty-icon { font-size: 64px; margin-bottom: 16px; }
-
-#pagination { margin-top: 20px; display: flex; justify-content: center; }
-.pagination-controls { display: flex; align-items: center; gap: 6px; background: var(--bg-card); padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); }
-.pagination-controls button { padding: 6px 12px; border: 1px solid var(--border); background: var(--bg); border-radius: 6px; cursor: pointer; }
-.pagination-controls button.active { background: var(--orange); color: var(--white); }
-.pagination-info { margin-left: 12px; font-size: 12px; color: var(--text-secondary); }
-
-.admin-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 32px; }
-.admin-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; text-align: center; }
-.admin-stat-number { font-size: 32px; font-weight: 800; display: block; }
-.admin-stat-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; }
-.admin-stat-admins .admin-stat-number { color: var(--orange); }
-.admin-stat-qualite .admin-stat-number { color: var(--blue); }
-.admin-stat-users .admin-stat-number { color: var(--navy); }
-.admin-stat-demandes .admin-stat-number { color: var(--green); }
-
-.admin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
-.admin-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; }
-.admin-card h3 { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
-.admin-card .admin-desc { color: var(--text-secondary); margin-bottom: 20px; font-size: 13px; }
-.admin-add-row { display: flex; gap: 10px; margin-bottom: 16px; }
-.admin-add-row input { flex: 1; padding: 11px 13px; border: 1.5px solid var(--border); border-radius: 9px; }
-.btn-add { padding: 11px 18px; background: var(--orange); color: var(--white); border: none; border-radius: 9px; font-weight: 700; cursor: pointer; }
-.admin-divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
-#admin-list, #qualite-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; }
-.admin-email-row { display: flex; align-items: center; justify-content: space-between; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; padding: 11px 14px; gap: 12px; flex-wrap: wrap; }
-.admin-email-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-.admin-email-text { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.admin-badge { background: var(--orange); color: var(--white); font-size: 10px; padding: 3px 8px; border-radius: 12px; }
-.admin-self { font-size: 11px; color: var(--text-secondary); font-style: italic; }
-.admin-email-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.btn-role { border: none; border-radius: 7px; padding: 6px 11px; font-size: 11px; font-weight: 700; cursor: pointer; }
-.btn-role-admin { background: #FFF3E0; color: var(--orange); }
-.btn-role-qualite { background: var(--blue-light); color: var(--blue); }
-.btn-role-lecteur { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
-.admin-empty { color: var(--text-secondary); text-align: center; padding: 30px 20px; }
-
-.users-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; margin-bottom: 32px; }
-.users-card h3 { margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
-.users-toolbar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-.users-search { flex: 1; min-width: 200px; position: relative; }
-.users-search input { width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid var(--border); border-radius: 10px; }
-.users-search::before { content: "🔍"; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); }
-.user-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
-.user-filter-btn { background: var(--bg); border: 1.5px solid var(--border); border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
-.user-filter-btn.active { background: var(--orange); color: var(--white); border-color: var(--orange); }
-#users-list { display: flex; flex-direction: column; gap: 10px; max-height: 600px; overflow-y: auto; }
-.user-row { display: flex; align-items: center; gap: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; flex-wrap: wrap; }
-.user-info { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
-.user-avatar { width: 42px; height: 42px; border-radius: 50%; background: linear-gradient(135deg, var(--orange) 0%, var(--navy) 100%); color: var(--white); display: flex; align-items: center; justify-content: center; font-weight: 700; }
-.user-email { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.user-meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-secondary); margin-top: 4px; flex-wrap: wrap; }
-.role-badge { border-radius: 20px; padding: 5px 12px; font-size: 11px; font-weight: 700; }
-.role-admin { background: #FFF3E0; color: var(--orange); }
-.role-qualite { background: var(--blue-light); color: var(--blue); }
-.role-lecteur { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
-.user-actions { display: flex; gap: 8px; align-items: center; }
-.user-role-select { padding: 7px 10px; border: 1.5px solid var(--border); border-radius: 7px; }
-
-.logs-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; }
-.logs-card h3 { margin-bottom: 20px; }
-#admin-logs { display: flex; flex-direction: column; gap: 10px; max-height: 500px; overflow-y: auto; }
-.log-entry { background: var(--bg); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; }
-.log-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
-.log-action { font-weight: 700; }
-.log-target { color: var(--text-secondary); font-weight: 600; }
-.log-meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-secondary); }
-.log-details { margin-top: 6px; font-size: 12px; color: var(--text-secondary); font-style: italic; }
-
-@media (max-width: 900px) {
-  #panel-demandes { flex-direction: column; }
-  #form-section { width: 100%; min-width: unset; border-right: none; position: static; height: auto; }
-  .stats-bar { grid-template-columns: repeat(2, 1fr); }
-  .admin-grid { grid-template-columns: 1fr; }
-  .admin-stats { grid-template-columns: repeat(2, 1fr); }
-}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestion Popups Reflex</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-<div id="toast-container"></div>
+  <!-- ══════════ TOAST ══════════ -->
+  <div id="toast-container"></div>
 
-<div id="confirm-modal">
-  <div class="modal-content">
-    <h3 id="confirm-title">Confirmer</h3>
-    <p id="confirm-message">Êtes-vous sûr ?</p>
-    <div class="modal-actions">
-      <button class="btn-modal btn-modal-cancel" id="confirm-no">Annuler</button>
-      <button class="btn-modal btn-modal-confirm" id="confirm-yes">Confirmer</button>
+  <!-- ══════════ MODAL CONFIRMATION ══════════ -->
+  <div id="modal-overlay" class="hidden">
+    <div class="modal-box">
+      <h3 id="modal-title">Confirmer</h3>
+      <p id="modal-message">Êtes-vous sûr ?</p>
+      <div class="modal-actions">
+        <button class="btn-secondary" id="modal-cancel">Annuler</button>
+        <button class="btn-danger" id="modal-confirm">Confirmer</button>
+      </div>
     </div>
   </div>
-</div>
 
-<div id="screen-login">
-  <div class="login-box">
-    <div class="login-logo">
-      <div class="icon">🔧</div>
-      <h1>Demandes Popups V2</h1>
-      <p>Gestion des modifications · Service Qualité</p>
+  <!-- ══════════ ÉCRAN LOGIN ══════════ -->
+  <div id="screen-login">
+    <div class="login-box">
+      <div class="login-icon">🔧</div>
+      <h1>Gestion Popups Reflex</h1>
+      <p class="login-subtitle">Service Qualité</p>
+      <div class="field">
+        <label for="login-email">Adresse e-mail</label>
+        <input type="email" id="login-email" placeholder="prenom.nom@sncf.fr" autocomplete="email">
+      </div>
+      <div class="field">
+        <label for="login-pass">Mot de passe</label>
+        <input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <button class="btn-primary btn-full" id="btn-login">Se connecter</button>
+      <p id="login-error" class="error-text hidden"></p>
     </div>
-    <div class="field">
-      <label>Adresse e-mail</label>
-      <input type="email" id="login-email" placeholder="prenom.nom@domaine.fr"
-             onkeydown="if(event.key==='Enter') doLogin()" autocomplete="email">
-    </div>
-    <div class="field">
-      <label>Mot de passe</label>
-      <input type="password" id="login-pass" placeholder="••••••••"
-             onkeydown="if(event.key==='Enter') doLogin()" autocomplete="current-password">
-    </div>
-    <button class="btn-primary" onclick="doLogin()">Se connecter</button>
   </div>
-</div>
 
-<div id="screen-app">
-  <header class="topbar">
-    <div class="topbar-left">
-      <span class="ticon">🔧</span>
-      <h2>Demandes Modification Popups</h2>
-      <nav class="tabs">
-        <button class="tab-btn active" data-tab="demandes" onclick="switchTab('demandes')">📋 Demandes</button>
-        <button class="tab-btn" id="tab-admin" data-tab="admin" onclick="switchTab('admin')" style="display:none">⚙️ Administration</button>
+  <!-- ══════════ ÉCRAN APPLICATION ══════════ -->
+  <div id="screen-app" class="hidden">
+
+    <!-- Header -->
+    <header>
+      <div class="header-left">
+        <span class="header-icon">🔧</span>
+        <h1>Popups Reflex</h1>
+      </div>
+      <nav id="nav-tabs">
+        <button class="tab-btn active" data-tab="demandes">📋 Demandes</button>
+        <button class="tab-btn hidden" data-tab="users" id="tab-users">👥 Utilisateurs</button>
       </nav>
-    </div>
-    <div class="topbar-right">
-      <button class="theme-toggle" onclick="toggleTheme()" title="Changer de thème">
-        <span id="theme-icon">🌙</span>
-      </button>
-      <div class="user-pill">
-        <strong id="user-email"></strong>
-        <span class="role" id="user-role"></span>
+      <div class="header-right">
+        <div class="user-info">
+          <span id="header-email"></span>
+          <span id="header-role" class="role-badge"></span>
+        </div>
+        <button class="btn-secondary btn-sm" id="btn-logout">Déconnexion</button>
       </div>
-      <button class="btn-logout" onclick="doLogout()">Déconnexion</button>
-    </div>
-  </header>
+    </header>
 
-  <div id="panel-demandes">
-    <aside id="form-section">
-      <h3>📝 Nouvelle demande</h3>
-      <div class="field">
-        <label>Symbole *</label>
-        <input type="text" id="f-symbole" placeholder="ex. SYM-042" maxlength="50">
-      </div>
-      <div class="field">
-        <label>Catégorie</label>
-        <select id="f-categorie">
-          <option value="bug">🐛 Bug / Erreur</option>
-          <option value="contenu">📝 Contenu / Texte</option>
-          <option value="design">🎨 Design / Visuel</option>
-          <option value="ajout">➕ Ajout</option>
-          <option value="autre">📦 Autre</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Votre nom / prénom *</label>
-        <input type="text" id="f-demandeur" placeholder="ex. Jean Dupont" maxlength="100">
-      </div>
-      <div class="field">
-        <label>Raison de la demande *</label>
-        <textarea id="f-raison" placeholder="Décrivez pourquoi cette popup doit être modifiée…" maxlength="1000"></textarea>
-      </div>
-      <button class="btn-primary" id="btn-submit" onclick="submitDemande()">🚀 Envoyer la demande</button>
-    </aside>
+    <!-- ══════ PANEL DEMANDES ══════ -->
+    <main id="panel-demandes">
 
-    <main class="list-panel">
-      <div class="stats-bar">
-        <div class="stat-card">
-          <span class="stat-number" id="stat-total">0</span>
-          <span class="stat-label">Total</span>
+      <!-- Formulaire nouvelle demande (visible pour lecteurs) -->
+      <section id="section-form" class="hidden">
+        <h2>📝 Nouvelle demande</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="f-symbole">Symbole / Réf *</label>
+            <input type="text" id="f-symbole" placeholder="ex: POP-042" maxlength="50">
+          </div>
+          <div class="field">
+            <label for="f-type">Type de demande *</label>
+            <select id="f-type">
+              <option value="creation">➕ Création</option>
+              <option value="modification">✏️ Modification</option>
+              <option value="suppression">🗑️ Suppression</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="f-demandeur">Votre nom *</label>
+            <input type="text" id="f-demandeur" placeholder="Prénom Nom" maxlength="100">
+          </div>
+          <div class="field field-full">
+            <label for="f-description">Description *</label>
+            <textarea id="f-description" rows="4" placeholder="Décrivez la modification souhaitée…" maxlength="1000"></textarea>
+          </div>
         </div>
-        <div class="stat-card stat-nouveau">
-          <span class="stat-number" id="stat-nouveau">0</span>
-          <span class="stat-label">Nouveaux</span>
-        </div>
-        <div class="stat-card stat-encours">
-          <span class="stat-number" id="stat-encours">0</span>
-          <span class="stat-label">En cours</span>
-        </div>
-        <div class="stat-card stat-resolu">
-          <span class="stat-number" id="stat-resolu">0</span>
-          <span class="stat-label">Résolus</span>
-        </div>
-      </div>
+        <button class="btn-primary" id="btn-submit-demande">🚀 Envoyer la demande</button>
+      </section>
 
-      <div class="list-toolbar">
-        <div class="search-box">
-          <input type="text" id="search-input" placeholder="Rechercher (Ctrl+K)..." oninput="searchDemandes(this.value)">
+      <!-- Liste des demandes -->
+      <section id="section-list">
+        <div class="list-header">
+          <h2 id="list-title">📋 Demandes</h2>
+          <div class="list-filters">
+            <button class="filter-btn active" data-filter="all">Toutes</button>
+            <button class="filter-btn" data-filter="nouveau">🆕 Nouvelles</button>
+            <button class="filter-btn" data-filter="en_cours">⚡ En cours</button>
+            <button class="filter-btn" data-filter="resolu">✅ Résolues</button>
+          </div>
         </div>
-        <div class="filter-group">
-          <button class="filter-btn active" data-filter="all" onclick="filterDemandes('all')">Tous</button>
-          <button class="filter-btn" data-filter="nouveau" onclick="filterDemandes('nouveau')">Nouveaux</button>
-          <button class="filter-btn" data-filter="en_cours" onclick="filterDemandes('en_cours')">En cours</button>
-          <button class="filter-btn" data-filter="resolu" onclick="filterDemandes('resolu')">Résolus</button>
-        </div>
-        <button class="btn-export" id="btn-export" onclick="exportCSV()">📥 Exporter CSV</button>
-      </div>
+        <div id="demandes-list"></div>
+      </section>
+    </main>
 
-      <div id="list"></div>
-      <div id="pagination"></div>
+    <!-- ══════ PANEL UTILISATEURS (Admin uniquement) ══════ -->
+    <main id="panel-users" class="hidden">
+
+      <!-- Créer un utilisateur -->
+      <section class="admin-section">
+        <h2>➕ Créer un utilisateur</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="u-email">Email *</label>
+            <input type="email" id="u-email" placeholder="prenom.nom@sncf.fr">
+          </div>
+          <div class="field">
+            <label for="u-nom">Nom complet *</label>
+            <input type="text" id="u-nom" placeholder="Prénom Nom">
+          </div>
+          <div class="field">
+            <label for="u-pass">Mot de passe *</label>
+            <input type="password" id="u-pass" placeholder="Min 6 caractères">
+          </div>
+          <div class="field">
+            <label for="u-role">Rôle *</label>
+            <select id="u-role">
+              <option value="lecteur">👁 Lecteur (fait des demandes)</option>
+              <option value="qualite">📧 Qualité (traite les demandes)</option>
+              <option value="admin">👑 Admin (accès total)</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn-primary" id="btn-create-user">Créer le compte</button>
+      </section>
+
+      <!-- Liste des utilisateurs -->
+      <section class="admin-section">
+        <h2>👥 Utilisateurs existants</h2>
+        <div id="users-list"></div>
+      </section>
+
     </main>
   </div>
 
-  <div id="panel-admin">
-    <div class="admin-stats">
-      <div class="admin-stat admin-stat-users">
-        <span class="admin-stat-number" id="stat-users-total">0</span>
-        <span class="admin-stat-label">Utilisateurs</span>
-      </div>
-      <div class="admin-stat admin-stat-admins">
-        <span class="admin-stat-number" id="stat-admins">0</span>
-        <span class="admin-stat-label">Administrateurs</span>
-      </div>
-      <div class="admin-stat admin-stat-qualite">
-        <span class="admin-stat-number" id="stat-qualite">0</span>
-        <span class="admin-stat-label">Service Qualité</span>
-      </div>
-      <div class="admin-stat admin-stat-lecteurs">
-        <span class="admin-stat-number" id="stat-lecteurs">0</span>
-        <span class="admin-stat-label">Lecteurs</span>
-      </div>
-      <div class="admin-stat admin-stat-demandes">
-        <span class="admin-stat-number" id="stat-demandes-total">0</span>
-        <span class="admin-stat-label">Demandes</span>
-      </div>
-    </div>
-
-    <div class="users-card">
-      <h3>👥 Gestion des Utilisateurs</h3>
-      <div class="users-toolbar">
-        <div class="users-search">
-          <input type="text" placeholder="Rechercher un utilisateur..." oninput="searchUsers(this.value)">
-        </div>
-        <div class="user-filter-group">
-          <button class="user-filter-btn active" data-role="all" onclick="filterUsers('all')">Tous</button>
-          <button class="user-filter-btn" data-role="admin" onclick="filterUsers('admin')">👑 Admin</button>
-          <button class="user-filter-btn" data-role="qualite" onclick="filterUsers('qualite')">📧 Qualité</button>
-          <button class="user-filter-btn" data-role="lecteur" onclick="filterUsers('lecteur')">👁 Lecteur</button>
-        </div>
-      </div>
-      <div id="users-list"></div>
-    </div>
-
-    <div class="admin-grid">
-      <div class="admin-card">
-        <h3>👑 Administrateurs</h3>
-        <p class="admin-desc">Les administrateurs peuvent gérer les rôles et accéder à toutes les fonctionnalités.</p>
-        <div class="admin-add-row">
-          <input type="email" id="admin-new-email" placeholder="email@domaine.fr" onkeydown="if(event.key==='Enter') addAdmin()">
-          <button class="btn-add" onclick="addAdmin()">+ Ajouter</button>
-        </div>
-        <hr class="admin-divider">
-        <div id="admin-list"></div>
-      </div>
-
-      <div class="admin-card">
-        <h3>📧 Service Qualité</h3>
-        <p class="admin-desc">Les membres du service Qualité peuvent voir et répondre à toutes les demandes.</p>
-        <div class="admin-add-row">
-          <input type="email" id="qualite-new-email" placeholder="email@domaine.fr" onkeydown="if(event.key==='Enter') addQualite()">
-          <button class="btn-add" onclick="addQualite()">+ Ajouter</button>
-        </div>
-        <hr class="admin-divider">
-        <div id="qualite-list"></div>
-      </div>
-    </div>
-
-    <div class="logs-card">
-      <h3>📊 Historique des modifications</h3>
-      <div id="admin-logs"></div>
-    </div>
-  </div>
-</div>
-
+  <!-- ══════════ SCRIPTS ══════════ -->
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>
