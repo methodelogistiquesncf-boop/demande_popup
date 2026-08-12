@@ -1,105 +1,93 @@
-// ═══════════════════════════════════════
-// GESTION DES DEMANDES
-// ═══════════════════════════════════════
-
 import {
-  collection,
-  doc,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  getDocs,
-  query,
-  orderBy,
-  where,
-  serverTimestamp
+  collection, doc, addDoc, updateDoc, deleteDoc, query, where,
+  serverTimestamp, runTransaction, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { db } from "./firebase.js?v=2";
+import { db } from "./firebase.js?v=4";
+import { uploadCapture } from "./captures.js?v=4";
 
 const COLLECTION = "demandes";
 
-// Créer une demande
+// Numéro automatique DEM-AAAA-0000 (transaction = aucun doublon)
+export async function nextNumero() {
+  const counterRef = doc(db, "config", "counters");
+  return runTransaction(db, async (tx) => {
+    const snap = await tx.get(counterRef);
+    const year = new Date().getFullYear();
+    let cur = snap.exists() ? snap.data() : { year: year, next: 1 };
+    if (cur.year !== year) cur = { year: year, next: 1 };
+    tx.set(counterRef, { year: year, next: cur.next + 1 });
+    return "DEM-" + year + "-" + String(cur.next).padStart(4, "0");
+  });
+}
+
 export async function createDemande(data) {
   try {
+    let captureUrl = null;
+    if (data.captureFile) captureUrl = await uploadCapture(data.captureFile);
+    const numero = await nextNumero();
     const docRef = await addDoc(collection(db, COLLECTION), {
+      numero,
       symbole: data.symbole,
       type: data.type,
       demandeur: data.demandeur,
       demandeurEmail: data.demandeurEmail,
       description: data.description,
+      captureUrl: captureUrl,
       statut: "nouveau",
       reponse: null,
       dateCreation: serverTimestamp(),
+      dateReponse: null,
       dateResolution: null
     });
-    return { success: true, id: docRef.id };
+    return { success: true, id: docRef.id, numero: numero };
   } catch (e) {
     return { success: false, message: e.message };
   }
 }
 
-// Lister les demandes
-export async function getDemandes(userEmail, role) {
-  try {
-    let q;
-    if (role === "admin" || role === "qualite") {
-      // Admin et Qualité voient tout
-      q = query(collection(db, COLLECTION), orderBy("dateCreation", "desc"));
-    } else {
-      // Demandeur voit seulement SES demandes
-      q = query(
-        collection(db, COLLECTION),
-        where("demandeurEmail", "==", userEmail)
-      );
-    }
-    const snapshot = await getDocs(q);
-    let demandes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+// Écoute temps réel (cloche + liste toujours à jour)
+export function listenDemandes(userEmail, role, callback) {
+  let q;
+  if (role === "admin" || role === "qualite") {
+    q = query(collection(db, COLLECTION));
+  } else {
+    q = query(collection(db, COLLECTION), where("demandeurEmail", "==", userEmail));
+  }
+  return onSnapshot(q, (snapshot) => {
+    let demandes = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     demandes.sort((a, b) => {
       const ta = a.dateCreation && a.dateCreation.toMillis ? a.dateCreation.toMillis() : 0;
       const tb = b.dateCreation && b.dateCreation.toMillis ? b.dateCreation.toMillis() : 0;
       return tb - ta;
     });
-    return demandes;
-  } catch (e) {
-    console.error("Erreur chargement demandes:", e);
-    return [];
-  }
+    callback(demandes);
+  });
 }
 
-// Mettre à jour le statut
 export async function updateStatut(id, statut) {
   try {
-    const data = { statut };
-    if (statut === "resolu") {
-      data.dateResolution = serverTimestamp();
-    }
+    const data = { statut: statut };
+    if (statut === "resolu") data.dateResolution = serverTimestamp();
     await updateDoc(doc(db, COLLECTION, id), data);
     return { success: true };
-  } catch (e) {
-    return { success: false, message: e.message };
-  }
+  } catch (e) { return { success: false, message: e.message }; }
 }
 
-// Répondre à une demande
 export async function repondreDemande(id, reponse, statut) {
   try {
     await updateDoc(doc(db, COLLECTION, id), {
-      reponse,
-      statut,
+      reponse: reponse,
+      statut: statut,
+      dateReponse: serverTimestamp(),
       dateResolution: statut === "resolu" ? serverTimestamp() : null
     });
     return { success: true };
-  } catch (e) {
-    return { success: false, message: e.message };
-  }
+  } catch (e) { return { success: false, message: e.message }; }
 }
 
-// Supprimer une demande
 export async function deleteDemande(id) {
   try {
     await deleteDoc(doc(db, COLLECTION, id));
     return { success: true };
-  } catch (e) {
-    return { success: false, message: e.message };
-  }
+  } catch (e) { return { success: false, message: e.message }; }
 }

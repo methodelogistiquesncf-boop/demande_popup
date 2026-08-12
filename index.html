@@ -64,6 +64,10 @@
         <button class="tab-btn hidden" data-tab="users" id="tab-users">👥 Utilisateurs</button>
       </nav>
       <div class="header-right">
+        <div class="notif-wrapper">
+          <button class="bell-btn" id="bell-btn" title="Notifications">🔔<span class="bell-badge hidden" id="bell-badge">0</span></button>
+          <div class="notif-dropdown hidden" id="notif-dropdown"></div>
+        </div>
         <div class="user-info">
           <span id="header-email"></span>
           <span id="header-role" class="role-badge"></span>
@@ -98,6 +102,11 @@
           <div class="field field-full">
             <label for="f-description">Description *</label>
             <textarea id="f-description" rows="4" placeholder="Décrivez la modification souhaitée…" maxlength="1000"></textarea>
+          </div>
+          <div class="field field-full">
+            <label for="f-capture"> Capture d'écran (optionnel, 5 Mo max)</label>
+            <input type="file" id="f-capture" accept="image/*">
+            <div id="capture-preview" class="capture-preview hidden"></div>
           </div>
         </div>
         <button class="btn-primary" id="btn-submit-demande">🚀 Envoyer la demande</button>

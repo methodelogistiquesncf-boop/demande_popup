@@ -1,4 +1,23 @@
+# -*- coding: utf-8 -*-
+import os
 
+BASE = os.path.dirname(os.path.abspath(__file__))
+
+def read(p):
+    with open(os.path.join(BASE, *p.split("/")), encoding="utf-8") as f:
+        return f.read()
+
+def write(p, c):
+    full = os.path.join(BASE, *p.split("/"))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(c)
+    print("[OK] " + p)
+
+# ═══════════════════════════════════════
+# js/app.js : version complète (cloche + captures + numéros)
+# ═══════════════════════════════════════
+write("js/app.js", r'''
 import { initAuth, login, logout, getCurrentUser, getCurrentRole, resetPassword } from "./auth.js?v=4";
 import { createUser, getAllUsers, updateUserRole, deleteUser } from "./users.js?v=4";
 import { createDemande, listenDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js?v=4";
@@ -360,3 +379,66 @@ async function handleCreateUser() {
     showToast("Erreur : " + result.message, "error");
   }
 }
+''')
+
+# ═══════════════════════════════════════
+# sw.js : nouveau cache (v3) + captures.js
+# ═══════════════════════════════════════
+write("sw.js", r'''// Service Worker - Gestion Popups Reflex v3
+const CACHE_NAME = "popups-reflex-v3";
+const ASSETS = [
+  "./", "./index.html", "./manifest.json", "./icons/icon.svg",
+  "./css/style.css", "./js/app.js", "./js/auth.js", "./js/config.js",
+  "./js/demandes.js", "./js/firebase.js", "./js/ui.js", "./js/users.js",
+  "./js/captures.js"
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((names) =>
+      Promise.all(names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+  if (url.hostname.includes("firebase") || url.hostname.includes("googleapis") || url.hostname.includes("gstatic")) return;
+
+  if (event.request.method === "GET" &&
+      (event.request.url.endsWith(".html") || event.request.url.endsWith(".js") ||
+       event.request.url.endsWith(".css") || event.request.url.endsWith(".svg"))) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        fetch(event.request).then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+        }).catch(() => {});
+        return cached || fetch(event.request);
+      })
+    );
+    return;
+  }
+
+  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+});
+''')
+
+# ═══ Anti-cache : v3 -> v4 sur les fichiers restants ═══
+for p in ["index.html", "js/auth.js", "js/users.js", "js/ui.js", "js/config.js"]:
+    c = read(p)
+    if "?v=3" in c:
+        write(p, c.replace("?v=3", "?v=4"))
+
+print("\n=== TERMINÉ ===")
+print("1. Test local : python -m http.server 8123")
+print("2. Publication : git add . && git commit -m 'Numeros + cloche + captures' && git push")
+input("Appuyez sur Entrée...")
