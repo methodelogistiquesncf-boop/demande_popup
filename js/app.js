@@ -34,9 +34,11 @@ function onAuthChange(user, role) {
     roleBadge.textContent = getRoleLabel(role);
     roleBadge.className = `role-badge ${role}`;
 
-    // Afficher/cacher selon rôle
+    // Onglet Utilisateurs : admin uniquement
     document.getElementById("tab-users").classList.toggle("hidden", role !== ROLES.ADMIN);
-    document.getElementById("section-form").classList.toggle("hidden", role !== ROLES.LECTEUR);
+
+    // ✅ Formulaire de demande visible pour tous les rôles
+    document.getElementById("section-form").classList.remove("hidden");
 
     // Charger les données
     loadDemandes();
