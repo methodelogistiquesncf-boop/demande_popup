@@ -1,3 +1,12 @@
+
+// ─── Enregistrement du Service Worker (PWA) ───
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js")
+      .then(() => console.log("[SW] Enregistre"))
+      .catch((e) => console.warn("[SW] Erreur:", e));
+  });
+}
 // ═══════════════════════════════════════
 // POINT D'ENTRÉE DE L'APPLICATION
 // ═══════════════════════════════════════

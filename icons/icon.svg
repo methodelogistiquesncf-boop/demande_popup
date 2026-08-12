@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1A2F4E"/>
+  <g transform="translate(256 240)">
+    <!-- Bulle de dialogue -->
+    <path d="M -140 -100 Q -140 -130 -110 -130 L 110 -130 Q 140 -130 140 -100 L 140 20 Q 140 50 110 50 L -40 50 L -80 90 L -80 50 L -110 50 Q -140 50 -140 20 Z"
+          fill="#E05A00" stroke="#FFF" stroke-width="4"/>
+    <!-- Engrenage/clé -->
+    <g transform="translate(0 -40)" fill="#FFF">
+      <path d="M 0 -50 L 10 -50 L 14 -38 Q 22 -34 28 -28 L 40 -32 L 48 -24 L 42 -14 Q 46 -6 46 0 L 58 4 L 54 14 L 42 14 Q 38 22 32 28 L 38 40 L 28 48 L 18 40 Q 10 44 0 44 Q -10 44 -18 40 L -28 48 L -38 40 L -32 28 Q -38 22 -42 14 L -54 14 L -58 4 L -46 0 Q -46 -6 -42 -14 L -48 -24 L -40 -32 L -28 -28 Q -22 -34 -14 -38 Z"/>
+      <circle r="16" fill="#1A2F4E"/>
+    </g>
+  </g>
+  <!-- Texte "POP" -->
+  <text x="256" y="420" text-anchor="middle" font-family="Arial Black, sans-serif"
+        font-size="64" font-weight="900" fill="#FFF" letter-spacing="2">POPUPS</text>
+</svg>
