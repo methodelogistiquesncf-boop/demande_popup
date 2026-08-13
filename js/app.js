@@ -1,15 +1,21 @@
 
-import { initAuth, login, logout, getCurrentUser, getCurrentRole, resetPassword } from "./auth.js?v=4";
-import { createUser, getAllUsers, updateUserRole, deleteUser } from "./users.js?v=4";
-import { createDemande, listenDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js?v=4";
-import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatutLabel, getTypeLabel } from "./ui.js?v=4";
-import { ROLES } from "./config.js?v=4";
+import { initAuth, login, logout, getCurrentUser, getCurrentRole, resetPassword } from "./auth.js";
+import { createUser, getAllUsers, updateUserRole, deleteUser } from "./users.js";
+import { createDemande, listenDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js";
+import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatutLabel, getTypeLabel } from "./ui.js";
+import { ROLES } from "./config.js";
 
 let currentFilter = "all";
 let allDemandes = [];
 let pendingNotifs = [];
 let pendingCapture = null;
 let unsubDemandes = null;
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("[SW]", e));
+  });
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   initAuth(onAuthChange);
@@ -37,7 +43,6 @@ function onAuthChange(user, role) {
     const key = "lastSeen_" + user.uid;
     if (!localStorage.getItem(key)) localStorage.setItem(key, String(Date.now()));
 
-    // Temps reel : liste + cloche toujours a jour
     unsubDemandes = listenDemandes(user.email, role, (demandes) => {
       allDemandes = demandes;
       renderDemandes();
@@ -59,7 +64,11 @@ function bindEvents() {
   document.getElementById("btn-logout").addEventListener("click", () => logout());
 
   document.querySelectorAll(".tab-btn").forEach(btn => {
-    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === btn.dataset.tab));
+      document.getElementById("panel-demandes").classList.toggle("hidden", btn.dataset.tab !== "demandes");
+      document.getElementById("panel-users").classList.toggle("hidden", btn.dataset.tab !== "users");
+    });
   });
 
   document.querySelectorAll(".filter-btn").forEach(btn => {
@@ -74,7 +83,6 @@ function bindEvents() {
   document.getElementById("btn-submit-demande").addEventListener("click", handleSubmitDemande);
   document.getElementById("btn-create-user").addEventListener("click", handleCreateUser);
 
-  // Oeil mot de passe
   document.getElementById("toggle-pass").addEventListener("click", () => {
     const input = document.getElementById("login-pass");
     const btn = document.getElementById("toggle-pass");
@@ -82,7 +90,6 @@ function bindEvents() {
     else { input.type = "password"; btn.textContent = "👁"; btn.title = "Afficher"; }
   });
 
-  // Mot de passe oublie
   document.getElementById("link-forgot").addEventListener("click", async (e) => {
     e.preventDefault();
     const email = document.getElementById("login-email").value.trim();
@@ -92,7 +99,6 @@ function bindEvents() {
     else showToast(result.message, "error");
   });
 
-  // Cloche notifications
   document.getElementById("bell-btn").addEventListener("click", (e) => {
     e.stopPropagation();
     const dd = document.getElementById("notif-dropdown");
@@ -107,7 +113,6 @@ function bindEvents() {
   });
   document.addEventListener("click", () => document.getElementById("notif-dropdown").classList.add("hidden"));
 
-  // Apercu capture
   document.getElementById("f-capture").addEventListener("change", (e) => {
     const file = e.target.files[0];
     const preview = document.getElementById("capture-preview");
@@ -138,13 +143,6 @@ async function handleLogin() {
   btn.disabled = false; btn.textContent = "Se connecter";
 }
 
-function switchTab(tab) {
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  document.getElementById("panel-demandes").classList.toggle("hidden", tab !== "demandes");
-  document.getElementById("panel-users").classList.toggle("hidden", tab !== "users");
-}
-
-// ═══ CLOCHE ═══
 function updateBell() {
   const user = getCurrentUser();
   if (!user) return;
@@ -164,7 +162,6 @@ function updateBell() {
   badge.classList.toggle("hidden", pendingNotifs.length === 0);
 }
 
-// ═══ LISTE DES DEMANDES ═══
 function renderDemandes() {
   const container = document.getElementById("demandes-list");
   const role = getCurrentRole();
@@ -188,9 +185,9 @@ function renderDemandes() {
         </div>
       </div>
       <div class="demande-body">
-        ${d.symbole && d.numero ? '<p style="font-size:12px;color:var(--text-light);margin-bottom:6px">Symbole : <strong>' + escapeHtml(d.symbole) + '</strong></p>' : ""}
+        ${d.symbole && d.numero ? '<p class="symbole-line">Symbole : <strong>' + escapeHtml(d.symbole) + '</strong></p>' : ""}
         <p>${escapeHtml(d.description)}</p>
-        ${d.captureUrl ? '<a href="' + d.captureUrl + '" target="_blank" rel="noopener"><img class="capture-thumb" src="' + d.captureUrl + '" alt="Capture d écran"></a>' : ""}
+        ${d.captureUrl ? '<a href="' + d.captureUrl + '" target="_blank" rel="noopener"><img class="capture-thumb" src="' + d.captureUrl + '" alt="Capture"></a>' : ""}
       </div>
       ${d.reponse ? `
         <div class="demande-response">
@@ -250,7 +247,6 @@ function renderDemandes() {
   });
 }
 
-// ═══ ENVOI DEMANDE ═══
 async function handleSubmitDemande() {
   const symbole = document.getElementById("f-symbole").value.trim();
   const type = document.getElementById("f-type").value;
@@ -265,10 +261,8 @@ async function handleSubmitDemande() {
   btn.textContent = pendingCapture ? "⬆️ Envoi de la capture…" : "Envoi…";
 
   const result = await createDemande({
-    symbole, type, demandeur,
-    demandeurEmail: user.email,
-    description,
-    captureFile: pendingCapture
+    symbole: symbole, type: type, demandeur: demandeur,
+    demandeurEmail: user.email, description: description, captureFile: pendingCapture
   });
 
   btn.disabled = false;
@@ -286,10 +280,8 @@ async function handleSubmitDemande() {
   }
 }
 
-// ═══ GESTION UTILISATEURS (ADMIN) ═══
 async function loadUsers() {
-  const users = await getAllUsers();
-  renderUsers(users);
+  renderUsers(await getAllUsers());
 }
 
 function renderUsers(users) {
@@ -298,7 +290,7 @@ function renderUsers(users) {
   if (users.length === 0) { container.innerHTML = '<div class="empty-state"><p>Aucun utilisateur.</p></div>'; return; }
 
   container.innerHTML = users.map(u => `
-    <div class="user-card" data-id="${u.id}">
+    <div class="user-card">
       <div class="user-card-left">
         <div class="user-avatar">${escapeHtml((u.nom || u.email)[0].toUpperCase())}</div>
         <div class="user-card-info">

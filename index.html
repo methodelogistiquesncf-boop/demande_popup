@@ -2,24 +2,22 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-    <link rel="manifest" href="manifest.json">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestion Popups Reflex</title>
+  <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
   <link rel="apple-touch-icon" href="icons/icon.svg">
   <meta name="theme-color" content="#1A2F4E">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Popups Reflex">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gestion Popups Reflex</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-  <!-- ══════════ TOAST ══════════ -->
   <div id="toast-container"></div>
 
-  <!-- ══════════ MODAL CONFIRMATION ══════════ -->
   <div id="modal-overlay" class="hidden">
     <div class="modal-box">
       <h3 id="modal-title">Confirmer</h3>
@@ -31,7 +29,6 @@
     </div>
   </div>
 
-  <!-- ══════════ ÉCRAN LOGIN ══════════ -->
   <div id="screen-login">
     <div class="login-box">
       <div class="login-icon">🔧</div>
@@ -43,17 +40,18 @@
       </div>
       <div class="field">
         <label for="login-pass">Mot de passe</label>
-        <input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password">
+        <div class="password-wrapper">
+          <input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password">
+          <button type="button" class="toggle-pass" id="toggle-pass" title="Afficher">👁</button>
+        </div>
       </div>
+      <p class="forgot-password"><a href="#" id="link-forgot">Mot de passe oublié ?</a></p>
       <button class="btn-primary btn-full" id="btn-login">Se connecter</button>
       <p id="login-error" class="error-text hidden"></p>
     </div>
   </div>
 
-  <!-- ══════════ ÉCRAN APPLICATION ══════════ -->
   <div id="screen-app" class="hidden">
-
-    <!-- Header -->
     <header>
       <div class="header-left">
         <span class="header-icon">🔧</span>
@@ -76,10 +74,7 @@
       </div>
     </header>
 
-    <!-- ══════ PANEL DEMANDES ══════ -->
     <main id="panel-demandes">
-
-      <!-- Formulaire nouvelle demande (visible pour lecteurs) -->
       <section id="section-form" class="hidden">
         <h2>📝 Nouvelle demande</h2>
         <div class="form-grid">
@@ -104,7 +99,7 @@
             <textarea id="f-description" rows="4" placeholder="Décrivez la modification souhaitée…" maxlength="1000"></textarea>
           </div>
           <div class="field field-full">
-            <label for="f-capture"> Capture d'écran (optionnel, 5 Mo max)</label>
+            <label for="f-capture">📸 Capture d'écran (optionnel, 5 Mo max)</label>
             <input type="file" id="f-capture" accept="image/*">
             <div id="capture-preview" class="capture-preview hidden"></div>
           </div>
@@ -112,10 +107,9 @@
         <button class="btn-primary" id="btn-submit-demande">🚀 Envoyer la demande</button>
       </section>
 
-      <!-- Liste des demandes -->
       <section id="section-list">
         <div class="list-header">
-          <h2 id="list-title">📋 Demandes</h2>
+          <h2>📋 Demandes</h2>
           <div class="list-filters">
             <button class="filter-btn active" data-filter="all">Toutes</button>
             <button class="filter-btn" data-filter="nouveau">🆕 Nouvelles</button>
@@ -127,10 +121,7 @@
       </section>
     </main>
 
-    <!-- ══════ PANEL UTILISATEURS (Admin uniquement) ══════ -->
     <main id="panel-users" class="hidden">
-
-      <!-- Créer un utilisateur -->
       <section class="admin-section">
         <h2>➕ Créer un utilisateur</h2>
         <div class="form-grid">
@@ -158,16 +149,13 @@
         <button class="btn-primary" id="btn-create-user">Créer le compte</button>
       </section>
 
-      <!-- Liste des utilisateurs -->
       <section class="admin-section">
         <h2>👥 Utilisateurs existants</h2>
         <div id="users-list"></div>
       </section>
-
     </main>
   </div>
 
-  <!-- ══════════ SCRIPTS ══════════ -->
-  <script type="module" src="js/app.js?v=2"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

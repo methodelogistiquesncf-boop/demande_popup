@@ -1,13 +1,10 @@
-import {
-  collection, doc, addDoc, updateDoc, deleteDoc, query, where,
-  serverTimestamp, runTransaction, onSnapshot
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { db } from "./firebase.js?v=4";
-import { uploadCapture } from "./captures.js?v=4";
+
+import { collection, doc, addDoc, updateDoc, deleteDoc, query, where, serverTimestamp, runTransaction, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { db } from "./firebase.js";
+import { uploadCapture } from "./captures.js";
 
 const COLLECTION = "demandes";
 
-// Numéro automatique DEM-AAAA-0000 (transaction = aucun doublon)
 export async function nextNumero() {
   const counterRef = doc(db, "config", "counters");
   return runTransaction(db, async (tx) => {
@@ -26,7 +23,7 @@ export async function createDemande(data) {
     if (data.captureFile) captureUrl = await uploadCapture(data.captureFile);
     const numero = await nextNumero();
     const docRef = await addDoc(collection(db, COLLECTION), {
-      numero,
+      numero: numero,
       symbole: data.symbole,
       type: data.type,
       demandeur: data.demandeur,
@@ -40,12 +37,9 @@ export async function createDemande(data) {
       dateResolution: null
     });
     return { success: true, id: docRef.id, numero: numero };
-  } catch (e) {
-    return { success: false, message: e.message };
-  }
+  } catch (e) { return { success: false, message: e.message }; }
 }
 
-// Écoute temps réel (cloche + liste toujours à jour)
 export function listenDemandes(userEmail, role, callback) {
   let q;
   if (role === "admin" || role === "qualite") {
@@ -76,8 +70,7 @@ export async function updateStatut(id, statut) {
 export async function repondreDemande(id, reponse, statut) {
   try {
     await updateDoc(doc(db, COLLECTION, id), {
-      reponse: reponse,
-      statut: statut,
+      reponse: reponse, statut: statut,
       dateReponse: serverTimestamp(),
       dateResolution: statut === "resolu" ? serverTimestamp() : null
     });

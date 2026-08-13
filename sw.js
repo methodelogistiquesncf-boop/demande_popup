@@ -1,10 +1,9 @@
-// Service Worker - Gestion Popups Reflex v3
-const CACHE_NAME = "popups-reflex-v3";
+
+const CACHE_NAME = "popups-reflex-v7";
 const ASSETS = [
-  "./", "./index.html", "./manifest.json", "./icons/icon.svg",
-  "./css/style.css", "./js/app.js", "./js/auth.js", "./js/config.js",
-  "./js/demandes.js", "./js/firebase.js", "./js/ui.js", "./js/users.js",
-  "./js/captures.js"
+  "./", "./index.html", "./manifest.json", "./icons/icon.svg", "./css/style.css",
+  "./js/app.js", "./js/auth.js", "./js/config.js", "./js/demandes.js",
+  "./js/firebase.js", "./js/ui.js", "./js/users.js", "./js/captures.js"
 ];
 
 self.addEventListener("install", (event) => {
@@ -24,23 +23,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.hostname.includes("firebase") || url.hostname.includes("googleapis") || url.hostname.includes("gstatic")) return;
-
-  if (event.request.method === "GET" &&
-      (event.request.url.endsWith(".html") || event.request.url.endsWith(".js") ||
-       event.request.url.endsWith(".css") || event.request.url.endsWith(".svg"))) {
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        fetch(event.request).then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-        }).catch(() => {});
-        return cached || fetch(event.request);
-      })
-    );
-    return;
-  }
-
-  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+  event.respondWith(
+    fetch(event.request).catch(() => caches.match(event.request))
+  );
 });
