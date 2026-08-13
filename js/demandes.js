@@ -1,7 +1,7 @@
 
 import { collection, doc, addDoc, updateDoc, deleteDoc, query, where, serverTimestamp, runTransaction, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { db } from "./firebase.js";
-import { uploadCapture } from "./captures.js";
+import { db } from "./firebase.js?v=8";
+import { processCapture } from "./captures.js?v=8";
 
 const COLLECTION = "demandes";
 
@@ -20,7 +20,7 @@ export async function nextNumero() {
 export async function createDemande(data) {
   try {
     let captureUrl = null;
-    if (data.captureFile) captureUrl = await uploadCapture(data.captureFile);
+    if (data.captureFile) captureUrl = await processCapture(data.captureFile);
     const numero = await nextNumero();
     const docRef = await addDoc(collection(db, COLLECTION), {
       numero: numero,

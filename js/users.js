@@ -1,7 +1,7 @@
 
 import { createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { collection, doc, setDoc, updateDoc, deleteDoc, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { db, secondaryAuth } from "./firebase.js";
+import { collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { db, secondaryAuth } from "./firebase.js?v=8";
 
 export async function createUser(email, password, nom, role) {
   try {
@@ -42,4 +42,21 @@ export async function deleteUser(uid) {
     await deleteDoc(doc(db, "users", uid));
     return { success: true };
   } catch (e) { return { success: false, message: e.message }; }
+}
+
+export async function touchLastLogin(user) {
+  try {
+    const ref = doc(db, "users", user.uid);
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      await updateDoc(ref, { lastLogin: serverTimestamp() });
+    } else {
+      await setDoc(ref, {
+        email: user.email, nom: "", role: "demandeur",
+        createdAt: serverTimestamp(), lastLogin: serverTimestamp(), active: true
+      });
+    }
+  } catch (e) {
+    console.warn("Erreur lastLogin:", e);
+  }
 }

@@ -1,9 +1,9 @@
 
-import { initAuth, login, logout, getCurrentUser, getCurrentRole, resetPassword } from "./auth.js";
-import { createUser, getAllUsers, updateUserRole, deleteUser } from "./users.js";
-import { createDemande, listenDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js";
-import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatutLabel, getTypeLabel } from "./ui.js";
-import { ROLES } from "./config.js";
+import { initAuth, login, logout, getCurrentUser, getCurrentRole, resetPassword } from "./auth.js?v=8";
+import { createUser, getAllUsers, updateUserRole, deleteUser, touchLastLogin } from "./users.js?v=8";
+import { createDemande, listenDemandes, updateStatut, repondreDemande, deleteDemande } from "./demandes.js?v=8";
+import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatutLabel, getTypeLabel } from "./ui.js?v=8";
+import { ROLES } from "./config.js?v=8";
 
 let currentFilter = "all";
 let allDemandes = [];
@@ -42,6 +42,7 @@ function onAuthChange(user, role) {
 
     const key = "lastSeen_" + user.uid;
     if (!localStorage.getItem(key)) localStorage.setItem(key, String(Date.now()));
+    touchLastLogin(user);
 
     unsubDemandes = listenDemandes(user.email, role, (demandes) => {
       allDemandes = demandes;
@@ -187,7 +188,7 @@ function renderDemandes() {
       <div class="demande-body">
         ${d.symbole && d.numero ? '<p class="symbole-line">Symbole : <strong>' + escapeHtml(d.symbole) + '</strong></p>' : ""}
         <p>${escapeHtml(d.description)}</p>
-        ${d.captureUrl ? '<a href="' + d.captureUrl + '" target="_blank" rel="noopener"><img class="capture-thumb" src="' + d.captureUrl + '" alt="Capture"></a>' : ""}
+        ${d.captureUrl ? '<img class="capture-thumb" src="' + d.captureUrl + '" alt="Capture">' : ""}
       </div>
       ${d.reponse ? `
         <div class="demande-response">
@@ -245,6 +246,20 @@ function renderDemandes() {
       else showToast("Erreur : " + result.message, "error");
     });
   });
+
+  // Visionneuse capture : clic = plein ecran
+  container.querySelectorAll(".capture-thumb").forEach(img => {
+    img.addEventListener("click", () => {
+      const overlay = document.createElement("div");
+      overlay.className = "lightbox";
+      const big = document.createElement("img");
+      big.src = img.src;
+      big.alt = "Capture";
+      overlay.appendChild(big);
+      overlay.addEventListener("click", () => overlay.remove());
+      document.body.appendChild(overlay);
+    });
+  });
 }
 
 async function handleSubmitDemande() {
@@ -285,6 +300,11 @@ async function loadUsers() {
 }
 
 function renderUsers(users) {
+  users.sort((a, b) => {
+    const ta = a.lastLogin && a.lastLogin.toMillis ? a.lastLogin.toMillis() : 0;
+    const tb = b.lastLogin && b.lastLogin.toMillis ? b.lastLogin.toMillis() : 0;
+    return tb - ta;
+  });
   const container = document.getElementById("users-list");
   const currentUser = getCurrentUser();
   if (users.length === 0) { container.innerHTML = '<div class="empty-state"><p>Aucun utilisateur.</p></div>'; return; }
@@ -295,7 +315,7 @@ function renderUsers(users) {
         <div class="user-avatar">${escapeHtml((u.nom || u.email)[0].toUpperCase())}</div>
         <div class="user-card-info">
           <h4>${escapeHtml(u.nom || u.email)}</h4>
-          <p>${escapeHtml(u.email)} · Créé le ${formatDate(u.createdAt)}</p>
+          <p>${escapeHtml(u.email)} · Créé le ${formatDate(u.createdAt)} · 🕐 Dernière connexion : ${formatDate(u.lastLogin)}</p>
         </div>
       </div>
       <div class="user-card-right">
