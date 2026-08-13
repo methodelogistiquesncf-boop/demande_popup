@@ -6,6 +6,7 @@ import { showToast, showConfirm, formatDate, escapeHtml, getRoleLabel, getStatut
 import { ROLES } from "./config.js?v=8";
 
 let currentFilter = "all";
+let currentSearch = "";
 let allDemandes = [];
 let pendingNotifs = [];
 let pendingCapture = null;
@@ -79,6 +80,11 @@ function bindEvents() {
       btn.classList.add("active");
       renderDemandes();
     });
+  });
+
+  document.getElementById("search-input").addEventListener("input", (e) => {
+    currentSearch = e.target.value.toLowerCase().trim();
+    renderDemandes();
   });
 
   document.getElementById("btn-submit-demande").addEventListener("click", handleSubmitDemande);
@@ -170,9 +176,15 @@ function renderDemandes() {
 
   let filtered = allDemandes;
   if (currentFilter !== "all") filtered = allDemandes.filter(d => d.statut === currentFilter);
+  if (currentSearch) {
+    filtered = filtered.filter(d =>
+      (d.symbole || "").toLowerCase().includes(currentSearch) ||
+      (d.numero || "").toLowerCase().includes(currentSearch) ||
+      (d.demandeur || "").toLowerCase().includes(currentSearch));
+  }
 
   if (filtered.length === 0) {
-    container.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>Aucune demande ' + (currentFilter !== "all" ? "avec ce statut" : "pour le moment") + '.</p></div>';
+    container.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>Aucune demande ' + (currentSearch ? "pour cette recherche" : (currentFilter !== "all" ? "avec ce statut" : "pour le moment")) + '.</p></div>';
     return;
   }
 
