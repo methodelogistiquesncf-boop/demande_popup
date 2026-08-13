@@ -158,3 +158,9 @@ header { background: var(--navy); color: #fff; padding: 0 24px; height: 56px; di
 .aide-block h3 { margin-bottom: 10px; font-size: 15px; color: var(--navy); }
 .aide-block ul { padding-left: 22px; }
 .aide-block li { margin-bottom: 7px; font-size: 14px; line-height: 1.6; }
+
+.login-help { margin-top: 18px; font-size: 13px; color: var(--text-light); }
+.login-help summary { cursor: pointer; color: var(--orange); font-weight: 600; }
+.login-help summary:hover { text-decoration: underline; }
+.login-help ol { margin-top: 10px; padding-left: 20px; }
+.login-help li { margin-bottom: 6px; line-height: 1.5; }
