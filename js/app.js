@@ -70,6 +70,7 @@ function bindEvents() {
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === btn.dataset.tab));
       document.getElementById("panel-demandes").classList.toggle("hidden", btn.dataset.tab !== "demandes");
       document.getElementById("panel-users").classList.toggle("hidden", btn.dataset.tab !== "users");
+      document.getElementById("panel-aide").classList.toggle("hidden", btn.dataset.tab !== "aide");
     });
   });
 

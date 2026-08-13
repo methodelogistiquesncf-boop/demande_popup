@@ -60,6 +60,7 @@
       <nav id="nav-tabs">
         <button class="tab-btn active" data-tab="demandes">📋 Demandes</button>
         <button class="tab-btn hidden" data-tab="users" id="tab-users">👥 Utilisateurs</button>
+        <button class="tab-btn" data-tab="aide">❓ Aide</button>
       </nav>
       <div class="header-right">
         <div class="notif-wrapper">
@@ -155,6 +156,56 @@
       <section class="admin-section">
         <h2>👥 Utilisateurs existants</h2>
         <div id="users-list"></div>
+      </section>
+    </main>
+
+    <main id="panel-aide" class="hidden">
+      <section class="admin-section">
+        <h2>❓ Aide — Fonctionnement du site</h2>
+
+        <div class="aide-block">
+          <h3>👤 Vous êtes Demandeur</h3>
+          <ul>
+            <li>Connectez-vous puis remplissez le formulaire <strong>📝 Nouvelle demande</strong>.</li>
+            <li>Indiquez le <strong>symbole</strong> de la popup, le <strong>type</strong> (création, modification, suppression), votre nom et une <strong>description</strong> précise.</li>
+            <li>Ajoutez si besoin une <strong>📸 capture d'écran</strong> (5 Mo max) — cliquez dessus pour l'agrandir.</li>
+            <li>Un <strong>numéro automatique</strong> (ex : DEM-2026-0001) est attribué à chaque demande.</li>
+            <li>Suivez le <strong>statut</strong> : 🆕 Nouveau →  En cours → ✅ Résolu.</li>
+            <li>Quand la Qualité répond : <strong>cloche 🔔</strong> avec badge rouge + réponse affichée sous votre demande.</li>
+          </ul>
+        </div>
+
+        <div class="aide-block">
+          <h3>📧 Vous êtes Qualité</h3>
+          <ul>
+            <li>Vous voyez <strong>toutes les demandes</strong> de tous les utilisateurs.</li>
+            <li>La <strong>cloche 🔔</strong> signale les nouvelles demandes en temps réel.</li>
+            <li>Pour traiter : choisissez un <strong>statut</strong>, rédigez une <strong>réponse</strong>, cliquez <strong>💾 Enregistrer</strong>.</li>
+            <li>Utilisez la <strong>recherche 🔍</strong> (symbole, numéro, demandeur) et les filtres de statut.</li>
+            <li>Bouton 🗑️ pour supprimer une demande.</li>
+          </ul>
+        </div>
+
+        <div class="aide-block">
+          <h3>👑 Vous êtes Admin</h3>
+          <ul>
+            <li>Tout ce que fait la Qualité, plus l'onglet <strong>👥 Utilisateurs</strong>.</li>
+            <li><strong>Créer un compte</strong> : email + nom + mot de passe (6 caractères min) + rôle.</li>
+            <li><strong>Changer un rôle</strong> via le menu déroulant de chaque utilisateur.</li>
+            <li><strong>Supprimer un compte</strong> avec le bouton 🗑️.</li>
+            <li>La <strong>🕐 dernière connexion</strong> de chaque utilisateur est affichée.</li>
+          </ul>
+        </div>
+
+        <div class="aide-block">
+          <h3>🔑 Connexion & divers</h3>
+          <ul>
+            <li>👁 Le bouton œil permet de <strong>voir le mot de passe</strong> pendant la saisie.</li>
+            <li>« <strong>Mot de passe oublié ?</strong> » envoie un email de réinitialisation.</li>
+            <li>📱 Sur mobile : menu du navigateur → « Ajouter à l'écran d'accueil » pour installer l'application.</li>
+            <li>En cas de problème, contactez l'administrateur du site.</li>
+          </ul>
+        </div>
       </section>
     </main>
   </div>

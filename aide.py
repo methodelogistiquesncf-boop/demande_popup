@@ -12,7 +12,6 @@ def write(p, c):
         f.write(c)
     print("[OK] " + p)
 
-# ═══ 1. index.html : onglet Aide + panneau ═══
 html = read("index.html")
 modif = False
 
@@ -44,7 +43,7 @@ new_panel = """        <div id="users-list"></div>
             <li>Indiquez le <strong>symbole</strong> de la popup, le <strong>type</strong> (création, modification, suppression), votre nom et une <strong>description</strong> précise.</li>
             <li>Ajoutez si besoin une <strong>📸 capture d'écran</strong> (5 Mo max) — cliquez dessus pour l'agrandir.</li>
             <li>Un <strong>numéro automatique</strong> (ex : DEM-2026-0001) est attribué à chaque demande.</li>
-            <li>Suivez le <strong>statut</strong> : 🆕 Nouveau → ⚡ En cours → ✅ Résolu.</li>
+            <li>Suivez le <strong>statut</strong> : 🆕 Nouveau →  En cours → ✅ Résolu.</li>
             <li>Quand la Qualité répond : <strong>cloche 🔔</strong> avec badge rouge + réponse affichée sous votre demande.</li>
           </ul>
         </div>
@@ -92,7 +91,6 @@ if modif:
 else:
     print("[OK] index.html deja a jour")
 
-# ═══ 2. app.js : gestion de l'onglet aide ═══
 app = read("js/app.js")
 old_tabs = """      document.getElementById("panel-demandes").classList.toggle("hidden", btn.dataset.tab !== "demandes");
       document.getElementById("panel-users").classList.toggle("hidden", btn.dataset.tab !== "users");"""
@@ -104,7 +102,6 @@ if "panel-aide" not in app and old_tabs in app:
 else:
     print("[OK] js/app.js deja a jour")
 
-# ═══ 3. CSS : styles aide ═══
 css = read("css/style.css")
 if ".aide-block" not in css:
     css += '''
@@ -118,7 +115,6 @@ if ".aide-block" not in css:
 else:
     print("[OK] css deja a jour")
 
-# ═══ 4. Versions -> v11 ═══
 for p in ["index.html", "js/app.js", "js/auth.js", "js/users.js", "js/ui.js",
           "js/config.js", "js/firebase.js", "js/demandes.js", "js/captures.js"]:
     c = read(p)

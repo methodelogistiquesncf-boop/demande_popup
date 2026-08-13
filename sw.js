@@ -1,5 +1,5 @@
 
-const CACHE_NAME = "popups-reflex-v8";
+const CACHE_NAME = "popups-reflex-v11";
 const ASSETS = [
   "./", "./index.html", "./manifest.json", "./icons/icon.svg", "./css/style.css",
   "./js/app.js", "./js/auth.js", "./js/config.js", "./js/demandes.js",
